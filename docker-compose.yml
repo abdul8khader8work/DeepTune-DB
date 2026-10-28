@@ -1,0 +1,107 @@
+name: deeptune
+
+services:
+  metadata_db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${METADATA_DB_USER:-deeptune}
+      POSTGRES_PASSWORD: ${METADATA_DB_PASSWORD:-deeptune_dev_password}
+      POSTGRES_DB: ${METADATA_DB_NAME:-deeptune_meta}
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - metadata_data:/var/lib/postgresql/data
+      - ./infra/postgres/metadata.sql:/docker-entrypoint-initdb.d/10-metadata.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${METADATA_DB_USER:-deeptune} -d ${METADATA_DB_NAME:-deeptune_meta}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  target_db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${TARGET_SUPERUSER_PASSWORD:-postgres_dev_password}
+      POSTGRES_DB: target_db
+      TARGET_RO_USER: query_optimizer
+      TARGET_RO_PASSWORD: ${TARGET_DB_PASSWORD:-query_optimizer_dev_password}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - target_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - ./infra/postgres/demo.sql:/opt/deeptune/demo.sql:ro
+      - ./infra/postgres/grants.sql:/opt/deeptune/grants.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d target_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  shadow_db:
+    build:
+      context: ./infra/shadow_db
+    environment:
+      POSTGRES_USER: shadow_user
+      POSTGRES_PASSWORD: ${SHADOW_DB_PASSWORD:-shadow_dev_password}
+      POSTGRES_DB: shadow_db
+    ports:
+      - "127.0.0.1:5433:5432"
+    # Reviewer mandate: hypothetical indexes live in RAM only.
+    tmpfs:
+      - /var/lib/postgresql/data
+    shm_size: 256mb
+    volumes:
+      - ./infra/postgres/demo.sql:/docker-entrypoint-initdb.d/10-demo.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shadow_user -d shadow_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-string}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-deeptune-web}
+      JWT_TTL_MINUTES: ${JWT_TTL_MINUTES:-720}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-change-me-to-a-long-random-string}
+      CORS_ORIGINS: http://localhost:3000
+      METADATA_DB_DSN: postgresql://${METADATA_DB_USER:-deeptune}:${METADATA_DB_PASSWORD:-deeptune_dev_password}@metadata_db:5432/${METADATA_DB_NAME:-deeptune_meta}
+      SHADOW_DB_DSN: postgresql://shadow_user:${SHADOW_DB_PASSWORD:-shadow_dev_password}@shadow_db:5432/shadow_db
+      TARGET_CONNECT_TIMEOUT_S: ${TARGET_CONNECT_TIMEOUT_S:-5}
+      EXPLAIN_TIMEOUT_MS: ${EXPLAIN_TIMEOUT_MS:-5000}
+      MAX_SQL_LENGTH: ${MAX_SQL_LENGTH:-10000}
+      ANALYZE_RATE_LIMIT: ${ANALYZE_RATE_LIMIT:-10/minute}
+      RUN_TTL_SECONDS: ${RUN_TTL_SECONDS:-1800}
+      TARGET_ALLOW_MAINTENANCE: "false"
+      SHADOW_VALIDATE: "true"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      metadata_db:
+        condition: service_healthy
+      shadow_db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  metadata_data:
+  target_data:

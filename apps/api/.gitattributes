@@ -1,0 +1,2 @@
+# Keep the Dockerfile and Python sources LF-only for the Linux container image.
+* text eol=lf

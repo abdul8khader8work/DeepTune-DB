@@ -1,0 +1,2 @@
+# Container init scripts and SQL must keep LF endings, even on Windows clones.
+* text eol=lf
