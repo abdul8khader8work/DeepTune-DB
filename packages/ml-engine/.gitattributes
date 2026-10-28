@@ -1,0 +1,3 @@
+# Python sources, weights, and checkpoints must stay LF-only on every platform.
+* text eol=lf
+*.pt binary

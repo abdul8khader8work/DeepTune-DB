@@ -1,0 +1,6 @@
+# DeepTune ML engine — pure inference/training dependencies only.
+# No FastAPI, uvicorn, SQLAlchemy, or database drivers may be added here.
+torch>=2.2,<3.0
+torch-geometric>=2.5,<3.0
+numpy>=1.26,<3.0
+sqlglot>=25.0,<30.0

@@ -1,4 +1,4 @@
-.PHONY: install dev build lint typecheck clean api-install api-test api-run up down logs
+.PHONY: install dev build lint typecheck clean api-install api-test api-run ml-install ml-test ml-train ml-eval up down logs
 
 install:
 	cd apps/web && npm install
@@ -30,6 +30,21 @@ api-test:
 
 api-run:
 	cd apps/api && .venv/Scripts/python -m uvicorn src.main:app --reload --port 8000
+
+# --- Phase 3: neuro-symbolic ML engine -------------------------------------
+
+ml-install:
+	py -3.11 -m venv packages/ml-engine/.venv
+	packages/ml-engine/.venv/Scripts/python -m pip install -r packages/ml-engine/requirements-dev.txt
+
+ml-test:
+	cd packages/ml-engine && .venv/Scripts/python -m pytest
+
+ml-train:
+	cd packages/ml-engine && PYTHONPATH=src .venv/Scripts/python -m training.train --epochs 120 --train-per-tier 400 500 800 --val-size 150 --test-size 200 --out weights/demo-final.pt
+
+ml-eval:
+	cd packages/ml-engine && PYTHONPATH=src .venv/Scripts/python -m training.evaluate --checkpoint weights/demo-final.pt --tier 3
 
 up:
 	docker compose up -d --build
