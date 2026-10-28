@@ -415,7 +415,8 @@ def generate_candidates(
                 rejected.append(
                     PruningRejection(
                         f"{table_key}({', '.join(prefix)})",
-                        "storage overhead exceeds 15% of the table",
+                        "storage overhead exceeds "
+                        f"{storage_budget_ratio:.0%} of the table",
                     )
                 )
                 continue

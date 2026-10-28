@@ -81,7 +81,7 @@ def test_storage_budget_prunes_wide_indexes() -> None:
     )
     result = generate_candidates("SELECT id FROM tiny WHERE a = 1 AND b = 2", tiny)
     assert not result.candidates
-    assert any("15%" in rejection.reason for rejection in result.rejected)
+    assert any("40%" in rejection.reason for rejection in result.rejected)
 
 
 def test_write_heavy_tables_are_capped(catalog: SchemaCatalog) -> None:

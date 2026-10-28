@@ -1,0 +1,21 @@
+# Build context is the repository root so the API image can see
+# packages/ml-engine (Phase 4). Keep this list tight: the context is huge.
+.git
+.github
+**/node_modules
+**/.next
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.env
+**/*.log
+apps/web
+docs
+*.docx
+*.md
+packages/ml-engine/weights
+packages/ml-engine/tests

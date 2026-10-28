@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from parsers.explain import PlanGraph
 
 PredicateKind = Literal["equality", "range", "join", "grouping", "ordering"]
 IndexMethod = Literal["btree", "hash", "gin"]
@@ -110,3 +113,6 @@ class OptimizationReport:
     rejected: tuple[PruningRejection, ...]
     tables: tuple[TableRef, ...]
     symbolic_candidate_count: int = 0
+    #: Plan for the winning configuration, so the API can render the optimized
+    #: DAG without re-parsing. ``None`` only when no configuration was ranked.
+    plan_graph: "PlanGraph | None" = None

@@ -1,58 +1,153 @@
 "use client";
 
 import { create } from "zustand";
+import { copilotSocketUrl } from "@/lib/api";
+import type { CopilotFrame } from "@/types/api";
 import type { ChatMessage } from "@/types/graph";
-
-const seedMessages: ChatMessage[] = [
-  {
-    id: "seed-1",
-    role: "assistant",
-    text: "The planner is doing a sequential scan on orders because the composite predicate has no matching prefix index. I checked column selectivity before recommending anything.",
-    tool: {
-      tool: "analyze_column_selectivity",
-      args: "orders.status, orders.order_date",
-      result: "0.001",
-      status: "done",
-    },
-  },
-  {
-    id: "seed-2",
-    role: "user",
-    text: "Why customer_id first in the index?",
-  },
-  {
-    id: "seed-3",
-    role: "assistant",
-    text: "It is the join key, so it enables an index-nested-loop path. order_date is second to preserve the left-prefix rule for your range filter. INCLUDE keeps the heap fetch off the hot path.",
-  },
-];
 
 type CopilotState = {
   messages: ChatMessage[];
+  streaming: boolean;
+  runId: string | null;
+  attach: (runId: string | null) => void;
   send: (text: string) => void;
   clear: () => void;
 };
+
+let socket: WebSocket | null = null;
+let streamedMessageId: string | null = null;
 
 function nextId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
-  return `msg-${Date.now()}`;
+  return `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export const useCopilotStore = create<CopilotState>((set) => ({
-  messages: seedMessages,
-  send: (text) =>
+function appendChunk(chunk: string): void {
+  if (!streamedMessageId) return;
+  const target = streamedMessageId;
+  useCopilotStore.setState((state) => ({
+    messages: state.messages.map((message) =>
+      message.id === target ? { ...message, text: message.text + chunk } : message,
+    ),
+  }));
+}
+
+function handleFrame(frame: CopilotFrame): void {
+  if (frame.type === "ready") {
+    const id = nextId();
+    streamedMessageId = id;
+    useCopilotStore.setState((state) => ({
+      streaming: true,
+      messages: [...state.messages, { id, role: "assistant", text: "" }],
+    }));
+    return;
+  }
+  if (frame.type === "token") {
+    appendChunk(frame.text ?? "");
+    return;
+  }
+  if (frame.type === "done") {
+    streamedMessageId = null;
+    useCopilotStore.setState({ streaming: false });
+  }
+}
+
+function closeSocket(): void {
+  if (socket) {
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    socket.close();
+  }
+  socket = null;
+  streamedMessageId = null;
+}
+
+export const useCopilotStore = create<CopilotState>((set, get) => ({
+  messages: [],
+  streaming: false,
+  runId: null,
+
+  attach: (runId) => {
+    if (runId !== null && runId === get().runId && socket !== null) return;
+    closeSocket();
+
+    if (!runId) {
+      set({ runId: null, streaming: false });
+      return;
+    }
+
+    set({ runId, messages: [], streaming: true });
+    const ws = new WebSocket(copilotSocketUrl(runId));
+    socket = ws;
+
+    ws.onmessage = (event: MessageEvent) => {
+      try {
+        handleFrame(JSON.parse(String(event.data)) as CopilotFrame);
+      } catch {
+        // Ignore malformed frames rather than tearing down the socket.
+      }
+    };
+    ws.onerror = () => set({ streaming: false });
+    ws.onclose = (event: CloseEvent) => {
+      socket = null;
+      const messages = get().messages;
+      if (event.code === 4401) {
+        set({
+          streaming: false,
+          messages: [
+            ...messages,
+            {
+              id: nextId(),
+              role: "assistant",
+              text: "The copilot socket rejected the bearer token. Mint one with `python -m src.cli.token` and paste it with `storeToken(...)`.",
+            },
+          ],
+        });
+        return;
+      }
+      set({ streaming: false });
+    };
+  },
+
+  send: (text) => {
+    const question = text.trim();
+    if (!question) return;
+
+    const userMessage: ChatMessage = { id: nextId(), role: "user", text: question };
+
+    if (socket === null || socket.readyState !== WebSocket.OPEN) {
+      set((state) => ({
+        messages: [
+          ...state.messages,
+          userMessage,
+          {
+            id: nextId(),
+            role: "assistant",
+            text: "The copilot is not attached to a run yet. Analyse a query first.",
+          },
+        ],
+      }));
+      return;
+    }
+
+    const answerId = nextId();
+    streamedMessageId = answerId;
     set((state) => ({
+      streaming: true,
       messages: [
         ...state.messages,
-        { id: nextId(), role: "user", text },
-        {
-          id: nextId(),
-          role: "assistant",
-          text: "Copilot reasoning is wired to the ML engine in Phase 4. For now this is a UI shell: your question is captured, but no model is called.",
-        },
+        userMessage,
+        { id: answerId, role: "assistant", text: "" },
       ],
-    })),
-  clear: () => set({ messages: [] }),
+    }));
+    socket.send(JSON.stringify({ type: "question", text: question }));
+  },
+
+  clear: () => {
+    streamedMessageId = null;
+    set({ messages: [] });
+  },
 }));

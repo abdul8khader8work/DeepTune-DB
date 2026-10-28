@@ -1,0 +1,8 @@
+# Phase 4: inference-only ML dependencies for the FastAPI image.
+#
+# These are deliberately separate from requirements.txt so the Phase 2 API can
+# still be built without a 130 MB+ torch wheel. The engine itself stays in
+# packages/ml-engine; nothing here is training code.
+torch>=2.2,<3.0
+torch-geometric>=2.5,<3.0
+numpy>=1.26,<3.0

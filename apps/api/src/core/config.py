@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     shadow_validate: bool = True
     run_ttl_seconds: int = 1800
 
+    # --- Phase 4: neuro-symbolic engine wiring ------------------------------
+    ml_enabled: bool = True
+    # Empty means "resolve from the repository layout" (see services/engine.py).
+    ml_engine_src: str = ""
+    ml_checkpoint_path: str = ""
+    ml_device: str = "cpu"
+    ml_attention_nodes: int = 10
+    copilot_stream_delay_ms: int = 18
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

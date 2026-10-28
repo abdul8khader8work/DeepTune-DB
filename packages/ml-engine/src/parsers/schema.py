@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+#: Heap tuple header (t_xmin, t_xmax, t_ctid, ...) in bytes.
+TUPLE_HEADER_BYTES = 24
+#: Fill factor and page headers inflate the on-disk relation size.
+PAGE_OVERHEAD_RATIO = 1.25
+
 _DEFAULT_WIDTHS: tuple[tuple[str, int], ...] = (
     ("bool", 1),
     ("int2", 2),
@@ -99,10 +104,21 @@ class TableStats:
         return 16
 
     @property
-    def effective_bytes(self) -> int:
+    def estimated_heap_bytes(self) -> int:
+        """Relation size in bytes.
+
+        ``pg_total_relation_size`` when the catalog carries it; otherwise a
+        column-width estimate that includes the 24-byte tuple header and page
+        overhead, which the raw column sum omits by ~40%.
+        """
         if self.total_bytes > 0:
             return self.total_bytes
-        return max(0, self.row_count) * self.avg_row_bytes
+        rows = max(0, self.row_count)
+        return int(rows * (self.avg_row_bytes + TUPLE_HEADER_BYTES) * PAGE_OVERHEAD_RATIO)
+
+    @property
+    def effective_bytes(self) -> int:
+        return self.estimated_heap_bytes
 
     def column(self, name: str) -> ColumnStats | None:
         lowered = name.lower()

@@ -1,7 +1,14 @@
-"""Analysis pipeline: parse → EXPLAIN → DAG → candidates → hypopg validation."""
+"""Analysis pipeline: parse → EXPLAIN → DAG → engine beam search → hypopg.
 
+Phase 4 replaces the Phase 2 heuristic scorer with the neuro-symbolic engine.
+The engine runs in a worker thread (``asyncio.to_thread``) so the event loop is
+never blocked by PyTorch, and every engine fault degrades to the heuristic path
+instead of failing the run.
+"""
+
+import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import asyncpg
 
@@ -12,10 +19,16 @@ from src.db.shadow import ShadowUnavailable, connect_shadow, validate_index
 from src.db.target import connect_target
 from src.schemas.analysis import (
     AnalysisResult,
+    AttentionHotspot,
+    DAGEdge,
+    DAGNode,
     IndexRecommendation,
     QueryAnalysisRequest,
+    RejectedCandidate,
 )
-from src.services.dag import build_dag
+from src.services import ml
+from src.services.dag import Dag, build_dag
+from src.services.engine import EngineBundle
 from src.services.explain import explain_analyze
 from src.services.introspection import fetch_schema
 from src.services.recommender import recommend_indexes
@@ -30,6 +43,24 @@ class PipelineDeps:
     settings: Settings
     store: ConnectionStore
     runs: RunRegistry
+    engine: EngineBundle
+
+
+@dataclass
+class Stage:
+    """Everything the engine (or its fallback) contributes to a run."""
+
+    recommendations: list[IndexRecommendation] = field(default_factory=list)
+    original_nodes: list[DAGNode] = field(default_factory=list)
+    optimized_nodes: list[DAGNode] = field(default_factory=list)
+    edges: list[DAGEdge] = field(default_factory=list)
+    optimized_metrics: dict[str, float] = field(default_factory=dict)
+    engine: str = "heuristic"
+    attention: list[AttentionHotspot] = field(default_factory=list)
+    trace: list[str] = field(default_factory=list)
+    rejected: list[RejectedCandidate] = field(default_factory=list)
+    speedup: float = 1.0
+    symbolic_count: int = 0
 
 
 def _metrics(cost: float, time_ms: float) -> dict[str, float]:
@@ -50,6 +81,101 @@ async def _refresh_stats(conn: asyncpg.Connection, settings: Settings) -> None:
         await conn.execute("VACUUM ANALYZE")
     except asyncpg.PostgresError as exc:
         logger.warning("VACUUM ANALYZE failed: %s", exc.__class__.__name__)
+
+
+def _heuristic_stage(
+    validated,
+    schema,
+    request: QueryAnalysisRequest,
+    dag: Dag,
+    baseline_cost: float,
+    baseline_ms: float,
+) -> Stage:
+    return Stage(
+        recommendations=recommend_indexes(validated, schema, request.optimization_goal),
+        original_nodes=dag.nodes,
+        optimized_nodes=dag.nodes,
+        edges=dag.edges,
+        optimized_metrics=_metrics(baseline_cost, baseline_ms),
+        engine="heuristic",
+    )
+
+
+def _attention_list(outcome: ml.MlOutcome) -> list[AttentionHotspot]:
+    return [
+        AttentionHotspot(
+            node_index=int(item.node_index),
+            operator=str(item.operator),
+            relation=item.relation,
+            weight=round(float(item.weight), 6),
+        )
+        for item in outcome.attention
+    ]
+
+
+async def _engine_stage(
+    run_id: str,
+    request: QueryAnalysisRequest,
+    validated,
+    baseline,
+    schema,
+    dag: Dag,
+    deps: PipelineDeps,
+) -> Stage:
+    fallback = _heuristic_stage(
+        validated,
+        schema,
+        request,
+        dag,
+        baseline.total_cost,
+        baseline.execution_time_ms,
+    )
+    if not deps.engine.available:
+        return fallback
+
+    await deps.runs.update(
+        run_id,
+        "gnn_inference",
+        60,
+        "Symbolic pruning + GATv2 beam search over candidate index sets…",
+    )
+    try:
+        outcome = await asyncio.to_thread(
+            ml.optimize,
+            deps.engine.optimizer,
+            validated.sql,
+            baseline.plan,
+            schema,
+            request.optimization_goal,
+            dag.nodes,
+            dag.edges,
+            baseline.execution_time_ms,
+            run_id,
+        )
+    except Exception:  # noqa: BLE001 - a model fault must not kill the run
+        logger.exception("Engine inference failed for run %s; using heuristics", run_id)
+        return fallback
+
+    return Stage(
+        recommendations=outcome.recommendations or fallback.recommendations,
+        original_nodes=outcome.original_nodes,
+        optimized_nodes=outcome.optimized_nodes or dag.nodes,
+        edges=outcome.edges or dag.edges,
+        optimized_metrics=ml.scale_metrics(
+            baseline.total_cost,
+            baseline.execution_time_ms,
+            outcome.predicted_ms,
+        ),
+        engine="gnn",
+        attention=_attention_list(outcome),
+        trace=list(outcome.trace),
+        rejected=[
+            RejectedCandidate(description=str(item.description), reason=str(item.reason))
+            for item in outcome.rejected
+        ],
+        speedup=round(outcome.speedup, 2),
+        symbolic_count=outcome.symbolic_candidate_count,
+    )
 
 
 async def execute(run_id: str, request: QueryAnalysisRequest, deps: PipelineDeps) -> None:
@@ -101,49 +227,57 @@ async def _execute(
     finally:
         await conn.close()
 
-    await runs.update(
-        run_id,
-        "gnn_inference",
-        55,
-        "Scoring plan structure (heuristic placeholder; GATv2 arrives in Phase 3)…",
-    )
     original_dag = build_dag(baseline.plan)
-    original_metrics = _metrics(baseline.total_cost, baseline.execution_time_ms)
+    stage = await _engine_stage(
+        run_id, request, validated, baseline, schema, original_dag, deps
+    )
 
-    candidates = recommend_indexes(validated, schema, request.optimization_goal)
+    optimized_nodes = stage.optimized_nodes
+    optimized_metrics = stage.optimized_metrics
+    validated_recommendations = stage.recommendations
+    edges = stage.edges
 
-    optimized_nodes = original_dag.nodes
-    optimized_metrics = original_metrics
-    validated_recommendations = candidates
-
-    if candidates and settings.shadow_dsn and settings.shadow_validate:
+    if stage.recommendations and settings.shadow_dsn and settings.shadow_validate:
         await runs.update(
             run_id,
             "hypopg_validation",
-            75,
+            80,
             "Injecting hypothetical indexes into the shadow database…",
         )
-        validated_recommendations, optimized_nodes, optimized_metrics = (
+        validated_recommendations, shadow_dag, shadow_metrics = (
             await _validate_candidates(
                 validated.sql,
-                candidates,
+                stage.recommendations,
                 settings,
-                original_dag.nodes,
-                original_metrics,
+                stage.optimized_metrics,
             )
         )
-    elif candidates:
-        logger.info("Shadow validation disabled; returning heuristic candidates")
+        if shadow_dag is not None:
+            optimized_nodes = shadow_dag.nodes
+            edges = shadow_dag.edges
+            optimized_metrics = shadow_metrics
+    elif stage.recommendations:
+        logger.info("Shadow validation disabled; returning unvalidated candidates")
 
+    await runs.update(
+        run_id, "gnn_inference", 95, "Assembling explainability and recommendations…"
+    )
     result = AnalysisResult(
         run_id=run_id,
         status="completed",
-        original_metrics=original_metrics,
+        engine=stage.engine,
+        original_metrics=_metrics(baseline.total_cost, baseline.execution_time_ms),
         optimized_metrics=optimized_metrics,
-        original_dag=original_dag.nodes,
+        original_dag=stage.original_nodes or original_dag.nodes,
         optimized_dag=optimized_nodes,
-        edges=original_dag.edges,
+        edges=edges,
+        original_edges=original_dag.edges,
         recommendations=validated_recommendations,
+        attention=stage.attention,
+        symbolic_trace=stage.trace,
+        rejected_candidates=stage.rejected,
+        speedup_factor=stage.speedup,
+        symbolic_candidate_count=stage.symbolic_count,
     )
     states = [
         RecommendationState(
@@ -160,14 +294,13 @@ async def _validate_candidates(
     sql_query: str,
     candidates: list[IndexRecommendation],
     settings: Settings,
-    fallback_nodes: list,
     fallback_metrics: dict[str, float],
-) -> tuple[list[IndexRecommendation], list, dict[str, float]]:
+) -> tuple[list[IndexRecommendation], Dag | None, dict[str, float]]:
     try:
         conn = await connect_shadow(settings)
     except ShadowUnavailable as exc:
         logger.warning("Shadow validation skipped: %s", exc)
-        return candidates, fallback_nodes, fallback_metrics
+        return candidates, None, fallback_metrics
 
     validated: list[IndexRecommendation] = []
     best_plan = None
@@ -206,10 +339,9 @@ async def _validate_candidates(
         await conn.close()
 
     if not validated:
-        return candidates, fallback_nodes, fallback_metrics
+        return candidates, None, fallback_metrics
 
     if best_plan is None:
-        return validated, fallback_nodes, fallback_metrics
+        return validated, None, fallback_metrics
 
-    optimized = build_dag(best_plan)
-    return validated, optimized.nodes, _metrics(best_cost, best_time or 0.0)
+    return validated, build_dag(best_plan), _metrics(best_cost, best_time or 0.0)

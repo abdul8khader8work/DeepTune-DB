@@ -66,15 +66,41 @@ class IndexRecommendation(StrictModel):
     explanation: str
 
 
+class AttentionHotspot(StrictModel):
+    """One GATv2 attention record, used by the explainability panel."""
+
+    node_index: int
+    operator: str
+    relation: str | None = None
+    weight: float
+
+
+class RejectedCandidate(StrictModel):
+    """A symbolic candidate that was pruned before beam search."""
+
+    description: str
+    reason: str
+
+
+EngineBackend = Literal["gnn", "heuristic"]
+
+
 class AnalysisResult(StrictModel):
     run_id: str
     status: Literal["completed", "failed"]
+    engine: EngineBackend = "heuristic"
     original_metrics: dict[str, float]
     optimized_metrics: dict[str, float]
     original_dag: list[DAGNode]
     optimized_dag: list[DAGNode]
     edges: list[DAGEdge]
+    original_edges: list[DAGEdge] = []
     recommendations: list[IndexRecommendation]
+    attention: list[AttentionHotspot] = []
+    symbolic_trace: list[str] = []
+    rejected_candidates: list[RejectedCandidate] = []
+    speedup_factor: float = 1.0
+    symbolic_candidate_count: int = 0
 
 
 class ApplyIndexResponse(StrictModel):

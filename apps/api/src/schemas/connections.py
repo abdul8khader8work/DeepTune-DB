@@ -38,6 +38,8 @@ class TableSchema(StrictModel):
     name: str
     schema_name: str
     row_estimate: int
+    #: ``pg_total_relation_size``; 0 when the role cannot read relation sizes.
+    total_bytes: int = 0
     columns: list[ColumnSchema]
 
 

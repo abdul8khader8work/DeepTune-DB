@@ -68,7 +68,7 @@ rejects DML/DDL/transaction nodes. Predicates are extracted from `WHERE`, `JOIN 
 | Existing index | Single-column duplicate rejected |
 | Composite order | Only left prefixes of the ranked predicate list are emitted |
 | Access method | Equality/range → B-tree; JSON containment → GIN; optional equality → Hash |
-| Storage | Index estimate must stay below 15% of the table |
+| Storage | Index estimate must stay below the configured budget (15% in Phase 3, recalibrated to 40% in Phase 4 — see `docs/phase-4-integration.md`) |
 | Write-heavy tables | At most 3 candidate indexes |
 | DDL | Only `CREATE INDEX CONCURRENTLY ... USING ...` text for user review |
 
@@ -160,7 +160,7 @@ synthetic workload; Phase 4 supplies real hypopg plans through the same interfac
 - [x] Model loaded once by `PlanOptimizer`; all inference under `torch.no_grad()`.
 - [x] Metrics are MAE, RMSE, Spearman ρ, median Q-error, and MAPE; no accuracy metric.
 - [x] Weights and checkpoints are git-ignored.
-- [x] `CREATE INDEX CONCURRENTLY`, 15% storage cap, 3-index write-heavy cap, and 5% tie-break are
+- [x] `CREATE INDEX CONCURRENTLY`, the storage budget, the 3-index write-heavy cap, and the 5% tie-break are
       covered by tests.
 - [x] Exactly 3 GATv2 layers with 4 → 4 → 1 heads and a 128 → 64 → 1 output MLP.
 

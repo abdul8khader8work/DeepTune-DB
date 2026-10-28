@@ -3,6 +3,8 @@
 import { ChevronRight, Database, Settings, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { cn } from "@/lib/utils";
+import { useSessionStore } from "@/store/useSessionStore";
 
 type TopBarProps = {
   onOpenPalette: () => void;
@@ -11,6 +13,10 @@ type TopBarProps = {
 const breadcrumbs = ["public", "orders", "Query #42"];
 
 export function TopBar({ onOpenPalette }: TopBarProps) {
+  const connectionId = useSessionStore((state) => state.connectionId);
+  const engine = useSessionStore((state) => state.engine);
+  const online = connectionId !== null;
+
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-subtle bg-surface-0 px-4">
       <div className="flex items-center gap-2">
@@ -25,9 +31,24 @@ export function TopBar({ onOpenPalette }: TopBarProps) {
         </span>
       </div>
 
-      <div className="ml-2 flex items-center gap-1.5 rounded-full border border-ok/20 bg-ok/10 px-2 py-0.5 text-[11px] text-ok">
-        <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-ok" />
-        <span className="font-medium">Connected: prod_db</span>
+      <div
+        className={cn(
+          "ml-2 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]",
+          online
+            ? "border-ok/20 bg-ok/10 text-ok"
+            : "border-warn/25 bg-warn/10 text-warn",
+        )}
+        title={engine?.error ?? engine?.label}
+      >
+        <span
+          className={cn(
+            "h-1.5 w-1.5 rounded-full",
+            online ? "animate-pulse-dot bg-ok" : "bg-warn",
+          )}
+        />
+        <span className="font-medium">
+          {online ? "Connected: target_db" : "No database attached"}
+        </span>
       </div>
 
       <nav

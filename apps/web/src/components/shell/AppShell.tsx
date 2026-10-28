@@ -8,9 +8,16 @@ import { CommandPalette } from "@/components/shell/CommandPalette";
 import { LeftPane } from "@/components/left/LeftPane";
 import { CenterPane } from "@/components/center/CenterPane";
 import { RightPane } from "@/components/right/RightPane";
+import { useSessionStore } from "@/store/useSessionStore";
 
 export function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    // Probe the API once on mount so the status bar and schema panel can show
+    // real capability instead of the Phase 1 mock. Failures are non-fatal.
+    void useSessionStore.getState().refresh();
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

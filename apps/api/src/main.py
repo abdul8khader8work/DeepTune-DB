@@ -1,5 +1,6 @@
 """FastAPI application factory: lifespan, CORS, rate limits, error envelope."""
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -20,6 +21,8 @@ from src.core.errors import ApiError
 from src.core.logging import configure_logging
 from src.core.ratelimit import limiter
 from src.db.metadata import create_connection_store
+from src.db.run_archive import create_run_archive
+from src.services.engine import load_engine
 from src.services.runs import AppliedRegistry, RunRegistry
 
 logger = logging.getLogger(__name__)
@@ -30,17 +33,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = get_settings()
     configure_logging()
     store = await create_connection_store(settings)
+    archive = await create_run_archive(settings.metadata_dsn)
+    # The GATv2 checkpoint is loaded exactly once, off the event loop. A failure
+    # here must not stop the API: the pipeline degrades to heuristics.
+    engine = await asyncio.to_thread(load_engine, settings)
     app.state.deeptune = AppState(
         settings=settings,
         store=store,
-        runs=RunRegistry(settings),
+        runs=RunRegistry(settings, archive),
         applied=AppliedRegistry(),
+        engine=engine,
     )
-    logger.info("DeepTune API %s ready (%s)", settings.app_version, settings.app_env)
+    logger.info(
+        "DeepTune API %s ready (%s) — engine=%s",
+        settings.app_version,
+        settings.app_env,
+        engine.status.backend,
+    )
     try:
         yield
     finally:
         await app.state.deeptune.applied.close_all()
+        await archive.close()
         await store.close()
         logger.info("DeepTune API stopped")
 

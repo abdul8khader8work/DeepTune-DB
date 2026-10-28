@@ -12,6 +12,7 @@ SELECT
     t.table_schema,
     t.table_name,
     GREATEST(COALESCE(pc.reltuples, 0), 0)::bigint AS row_estimate,
+    COALESCE(pg_total_relation_size(pc.oid), 0)::bigint AS total_bytes,
     json_agg(
         json_build_object(
             'name', c.column_name,
@@ -62,7 +63,7 @@ LEFT JOIN LATERAL (
 ) AS ix ON true
 WHERE t.table_type = 'BASE TABLE'
   AND ($1::boolean OR t.table_schema = 'public')
-GROUP BY t.table_schema, t.table_name, pc.reltuples
+GROUP BY t.table_schema, t.table_name, pc.reltuples, pc.oid
 ORDER BY t.table_schema, t.table_name
 """
 
@@ -96,6 +97,7 @@ async def fetch_schema(
                 name=str(row["table_name"]),
                 schema_name=str(row["table_schema"]),
                 row_estimate=int(row["row_estimate"]),
+                total_bytes=int(row["total_bytes"]),
                 columns=columns,
             )
         )

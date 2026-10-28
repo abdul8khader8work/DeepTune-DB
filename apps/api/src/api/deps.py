@@ -8,6 +8,7 @@ from src.core.config import Settings
 from src.core.errors import unauthorized
 from src.core.security import decode_access_token
 from src.db.metadata import ConnectionStore
+from src.services.engine import EngineBundle
 from src.services.runs import AppliedRegistry, RunRegistry
 
 
@@ -19,6 +20,7 @@ class AppState:
     store: ConnectionStore
     runs: RunRegistry
     applied: AppliedRegistry
+    engine: EngineBundle
 
 
 def get_state(request: Request) -> AppState:
@@ -26,6 +28,10 @@ def get_state(request: Request) -> AppState:
     if not isinstance(state, AppState):  # pragma: no cover - lifespan guard
         raise RuntimeError("Application state is not initialised")
     return state
+
+
+def get_engine(request: Request) -> EngineBundle:
+    return get_state(request).engine
 
 
 async def require_auth(

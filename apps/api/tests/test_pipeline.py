@@ -41,14 +41,13 @@ async def test_shadow_unavailable_falls_back_to_baseline(
 
     monkeypatch.setattr(pipeline, "connect_shadow", fail_connect)
 
-    recommendations, nodes, metrics = await pipeline._validate_candidates(
+    recommendations, shadow_dag, metrics = await pipeline._validate_candidates(
         "SELECT * FROM orders",
         [RECOMMENDATION],
         settings,
-        NODES,
         METRICS,
     )
 
     assert recommendations == [RECOMMENDATION]
-    assert nodes == NODES
+    assert shadow_dag is None
     assert metrics == METRICS

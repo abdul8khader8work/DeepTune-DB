@@ -24,6 +24,7 @@ clean:
 api-install:
 	py -3.11 -m venv apps/api/.venv
 	apps/api/.venv/Scripts/python -m pip install -r apps/api/requirements-dev.txt
+	apps/api/.venv/Scripts/python -m pip install -r apps/api/requirements-ml.txt
 
 api-test:
 	cd apps/api && .venv/Scripts/python -m pytest

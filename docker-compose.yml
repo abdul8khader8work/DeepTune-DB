@@ -65,7 +65,9 @@ services:
 
   api:
     build:
-      context: ./apps/api
+      # Root context: the image needs packages/ml-engine alongside apps/api.
+      context: .
+      dockerfile: apps/api/Dockerfile
     environment:
       APP_ENV: ${APP_ENV:-dev}
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
@@ -83,6 +85,14 @@ services:
       RUN_TTL_SECONDS: ${RUN_TTL_SECONDS:-1800}
       TARGET_ALLOW_MAINTENANCE: "false"
       SHADOW_VALIDATE: "true"
+      # Phase 4: neuro-symbolic engine. An empty weights directory is safe —
+      # the API falls back to the heuristic recommender and says so.
+      ML_ENABLED: ${ML_ENABLED:-true}
+      ML_DEVICE: ${ML_DEVICE:-cpu}
+      ML_ATTENTION_NODES: ${ML_ATTENTION_NODES:-10}
+      COPILOT_STREAM_DELAY_MS: ${COPILOT_STREAM_DELAY_MS:-18}
+    volumes:
+      - ./packages/ml-engine/weights:/app/packages/ml-engine/weights:ro
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

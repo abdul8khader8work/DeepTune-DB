@@ -16,10 +16,11 @@ database; it produces a script you review and apply yourself.
 | **1. UI Skeleton & Design System** | Next.js 14, 3-pane console, design tokens, dummy DAG | **Complete** |
 | **2. Backend API & Security** | FastAPI, read-only role, `EXPLAIN` sandbox, `hypopg` shadow DB | **Complete** |
 | **3. Neuro-Symbolic ML Engine** | JSON→PyG parser, GATv2, symbolic pruning, beam search | **Complete** |
-| 4. Integration & Wow Factor | Live DAG, time-travel morph, streaming Copilot | Next |
+| **4. Integration & Wow Factor** | Live DAG, real metrics, hypopg apply, streaming Copilot | **Complete** |
 
-Phases 1–3 are complete. The UI is fully interactive with realistic dummy data, the API is ready,
-and the ML engine is trained and unit-tested; the three are wired together in Phase 4.
+All four phases are complete. The web console now runs against the live API and the trained engine:
+`Run & Optimize` executes a real `EXPLAIN`, the GNN ranks index configurations, hypopg validates the
+winner, and the copilot streams an explanation of the result.
 
 ---
 
@@ -78,24 +79,48 @@ See `docs/phase-3-ml-engine.md` for the graph contract, pruning table, and full 
 
 ---
 
+## What is in Phase 4
+
+- **One data path:** the console calls `POST /queries/analyze`, polls the run, and renders the
+  returned DAG. The Phase 1 mock plan survives only as an offline fallback.
+- **Engine loaded once:** `PlanOptimizer` is constructed in the FastAPI `lifespan` on a worker
+  thread, never inside a route. `GET /engine/status` reports the loaded checkpoint, parameter count,
+  device, and layer/head configuration.
+- **Real explainability:** GATv2 attention becomes the node heatmap, the beam trace becomes the
+  symbolic log, and pruned candidates are listed with their rejection reason.
+- **Honest degradation:** a missing checkpoint, a broken file, or `ML_ENABLED=false` drops the run to
+  the Phase 2 heuristic recommender and says so in the UI — startup never fails because of the model.
+- **Apply / revert:** the recommendation card injects the hypothetical index into the shadow DB via
+  hypopg, then reverts it. No DDL ever touches the target database.
+- **Streaming Copilot:** `/ws/copilot/{run_id}` streams a grounded, deterministic explanation
+  word-by-word over a WebSocket. No external LLM, no query text leaving the machine.
+- **Durable runs:** when `METADATA_DB_DSN` is set, `analysis_runs` stores status, engine, error, and
+  the full result JSON; without it, runs stay in memory exactly as in Phase 2.
+- **Container-ready:** the API image is built from the repository root, installs CPU-only torch, and
+  mounts `packages/ml-engine/weights` at runtime.
+
+See `docs/phase-4-integration.md` for the bridge mapping, calibration notes, and verification log.
+
+---
+
 ## Repository layout
 
 ```
 DeepTune-DB/
 ├── apps/
-│   ├── web/                  # Next.js 14 frontend (Phase 1)
+│   ├── web/                  # Next.js 14 frontend (Phase 1 + Phase 4 wiring)
 │   │   ├── src/app/          # App Router entry
 │   │   ├── src/components/   # shell / left / center / right / ui
-│   │   ├── src/lib/          # tokens, utils, mock data
-│   │   ├── src/store/        # Zustand stores
-│   │   └── src/types/        # strict shared types
-│   └── api/                  # FastAPI backend (Phase 2)
-│       ├── src/api/          # v1 routes + legacy aliases
+│   │   ├── src/lib/          # tokens, api client, plan adapter, mock fallback
+│   │   ├── src/store/        # Zustand stores (session, analysis, copilot, graph)
+│   │   └── src/types/        # strict shared types (graph + API contracts)
+│   └── api/                  # FastAPI backend (Phase 2 + Phase 4 integration)
+│       ├── src/api/          # v1 routes, engine status, copilot WebSocket
 │       ├── src/core/         # config, errors, security, rate limits
-│       ├── src/db/           # metadata, target, shadow connections
-│       ├── src/services/     # sqlglot guard, EXPLAIN, DAG, candidates
+│       ├── src/db/           # metadata, target, shadow, run archive
+│       ├── src/services/     # sqlglot guard, EXPLAIN, DAG, engine bridge, pipeline
 │       ├── src/schemas/      # strict Pydantic contracts
-│       └── tests/            # 40 unit/contract tests
+│       └── tests/            # 59 unit/contract tests
 ├── packages/
 │   └── ml-engine/            # PyTorch/PyG engine (Phase 3)
 │       ├── src/parsers/      # EXPLAIN JSON -> PyG graph
@@ -118,13 +143,36 @@ Model weights live in `packages/ml-engine/weights/` and are git-ignored.
 
 ## Quick start
 
+### Everything (Phase 4)
+
+```bash
+cp .env.example .env          # fill in JWT_SECRET and CREDENTIAL_ENCRYPTION_KEY
+docker compose up -d --build  # metadata_db, target_db, shadow_db, api, nginx
+
+cd apps/api
+.venv/Scripts/python -m src.cli.token --subject dev   # mint a bearer token
+
+cd ../../apps/web
+npm install && npm run dev
+```
+
+Open <http://localhost:3000>, paste the token into `localStorage["deeptune.token"]` (or set
+`NEXT_PUBLIC_API_TOKEN`), then press `Ctrl+Enter` in the editor. The status bar shows
+`GATv2 (neuro-symbolic)` when the engine loaded, or `heuristic fallback` with the reason in its
+tooltip. Check <http://localhost:8000/api/v1/engine/status> for the same information as JSON.
+
+The demo checkpoint is git-ignored, so train it first (see the ML engine section) or run with
+`ML_ENABLED=false` to use the Phase 2 heuristic recommender.
+
+### Frontend only
+
 ```bash
 cd apps/web
 npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>.
+Open <http://localhost:3000>. With the API down the console falls back to the sample plan.
 
 ```bash
 npm run build       # production build
@@ -134,17 +182,15 @@ npm run typecheck   # tsc --noEmit, strict mode
 
 Requires Node 18.17+.
 
-### Backend (Phase 2)
+### Backend (Phase 2 + 4)
 
 ```bash
-cp .env.example .env          # fill in JWT_SECRET and CREDENTIAL_ENCRYPTION_KEY
-docker compose up -d --build  # metadata_db, target_db, shadow_db, api, nginx
-
 cd apps/api
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-dev.txt
-.venv/Scripts/python -m pytest
-.venv/Scripts/python -m src.cli.token --subject dev   # bearer token
+.venv/Scripts/python -m pip install -r requirements-ml.txt   # torch + PyG (CPU)
+.venv/Scripts/python -m pytest                                # 59 tests
+.venv/Scripts/python -m uvicorn src.main:app --reload --port 8000
 ```
 
 The API listens on <http://localhost:8000>, docs at <http://localhost:8000/docs>, and the nginx
@@ -203,10 +249,15 @@ Exactly four button variants are permitted: **Primary**, **Secondary**, **Ghost*
 
 ## Roadmap
 
-Phase 3 (complete) added the pure PyTorch/PyG engine: EXPLAIN→graph parsing, a 3-layer GATv2
-cost model with global attention pooling, symbolic index pruning, and width-5 beam search. It is
-trained on a synthetic curriculum workload and reaches ρ = 0.93 on held-out tier-3 plans. Phase 4
-wires the web app to the API and the engine, with streaming updates and the node-morph animation.
+All four planned phases are complete: the design system, the secured FastAPI backend, the
+neuro-symbolic engine (ρ = 0.93 on held-out tier-3 plans), and the integration that connects them.
+
+Natural next steps, none of which are required for the current scope:
+
+- Feed hypopg-modified plans back into the GNN instead of scoring the baseline graph.
+- Collect a real `EXPLAIN (ANALYZE)` corpus to replace the synthetic training workload.
+- Persist attention and explainability payloads so historical runs stay fully inspectable.
+- Add an index-advisor view for workloads (many queries) rather than a single statement.
 
 ---
 

@@ -173,6 +173,7 @@ class PlanOptimizer:
             rejected=symbolic.rejected,
             tables=symbolic.tables,
             symbolic_candidate_count=len(symbolic.candidates),
+            plan_graph=explanation_graph if best is not None else None,
         )
 
     def rank_configurations(

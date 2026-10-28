@@ -48,6 +48,7 @@ async def analyze_query(
             settings=state.settings,
             store=state.store,
             runs=state.runs,
+            engine=state.engine,
         ),
     )
     return AnalyzeAccepted(

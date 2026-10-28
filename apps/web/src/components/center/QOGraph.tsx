@@ -12,38 +12,40 @@ import "@xyflow/react/dist/style.css";
 import { QONode } from "@/components/center/QONode";
 import { QOEdge } from "@/components/center/QOEdge";
 import { planEdges, planNodes } from "@/lib/mock-plan";
+import { toFlow } from "@/lib/plan-adapter";
+import { useAnalysisStore } from "@/store/useAnalysisStore";
 import { useGraphStore } from "@/store/useGraphStore";
-import type { QONodeData } from "@/types/graph";
 
 const nodeTypes = { qo: QONode };
 const edgeTypes = { qo: QOEdge };
 
-const optimizedOverrides: Record<string, Partial<QONodeData>> = {
-  seq: {
-    op: "Index Scan",
-    kind: "index",
-    cost: 48,
-    rows: 12000,
-    selectivity: 0.04,
-    attention: 0.18,
-    bottleneck: false,
-  },
-  join: { cost: 860, attention: 0.32, bottleneck: false },
-  aggregate: { cost: 980, attention: 0.2 },
-  limit: { cost: 1000, attention: 0.12 },
-};
-
 export function QOGraph() {
+  const result = useAnalysisStore((state) => state.result);
   const view = useGraphStore((state) => state.view);
-  const sliderT = useGraphStore((state) => state.sliderT);
   const locked = useGraphStore((state) => state.locked);
   const selectedNodeId = useGraphStore((state) => state.selectedNodeId);
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
   const { fitView } = useReactFlow();
 
+  const plan = useMemo(() => {
+    if (!result) {
+      return { nodes: planNodes, edges: planEdges };
+    }
+    const optimized: boolean = view === "optimized";
+    const dag = optimized ? result.optimized_dag : result.original_dag;
+    const dagEdges = optimized
+      ? result.edges
+      : result.original_edges.length > 0
+        ? result.original_edges
+        : result.edges;
+    return toFlow(dag, dagEdges);
+  }, [result, view]);
+
+  const nodeCount = plan.nodes.length;
+
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      void fitView({ padding: 0.18 });
+      void fitView({ padding: 0.18, duration: 320 });
     });
 
     const element = document.querySelector(".react-flow");
@@ -59,60 +61,45 @@ export function QOGraph() {
       window.cancelAnimationFrame(frame);
       observer?.disconnect();
     };
-  }, [fitView]);
+  }, [fitView, nodeCount, view]);
 
-  const optimized = view === "optimized" || sliderT >= 0.5;
-
-  const nodes = useMemo<Node[]>(() => {
-    return planNodes.map((node) => {
-      const override = optimized ? optimizedOverrides[node.id] : undefined;
-
-      if (override) {
-        return {
-          ...node,
-          selected: node.id === selectedNodeId,
-          data: { ...node.data, ...override },
-        };
-      }
-
-      return { ...node, selected: node.id === selectedNodeId };
-    });
-  }, [optimized, selectedNodeId]);
-
-  const edges = useMemo(() => {
-    return planEdges.map((edge) => {
-      if (edge.id !== "e-seq-join" || !optimized) return edge;
-      return {
-        ...edge,
-        data: {
-          rows: 12000,
-          bottleneck: false,
-        },
-      };
-    });
-  }, [optimized]);
+  const nodes = useMemo<Node[]>(
+    () =>
+      plan.nodes.map((node) => ({
+        ...node,
+        selected: node.id === selectedNodeId,
+      })),
+    [plan.nodes, selectedNodeId],
+  );
 
   const onNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => setSelectedNode(node.id),
     [setSelectedNode],
   );
 
-  const onPaneClick = useCallback(
-    () => setSelectedNode(null),
-    [setSelectedNode],
-  );
+  const onPaneClick = useCallback(() => setSelectedNode(null), [setSelectedNode]);
+
+  if (nodeCount === 0) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-[11px] text-content-tertiary">
+          No plan yet. Run a query to capture its execution plan.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <ReactFlow
       nodes={nodes}
-      edges={edges}
+      edges={plan.edges}
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       onNodeClick={onNodeClick}
       onPaneClick={onPaneClick}
       fitView
       fitViewOptions={{ padding: 0.18 }}
-      minZoom={0.3}
+      minZoom={0.2}
       maxZoom={1.5}
       nodesDraggable={!locked}
       nodesConnectable={false}

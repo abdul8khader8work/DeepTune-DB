@@ -1,6 +1,7 @@
 """In-memory run registry and applied-hypopg-index tracking."""
 
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -8,11 +9,14 @@ from dataclasses import dataclass, field
 import asyncpg
 
 from src.core.config import Settings
+from src.db.run_archive import NullRunArchive, RunArchive, RunSnapshot
 from src.schemas.analysis import (
     AnalysisResult,
     IndexRecommendation,
     RunState as RunStateLiteral,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,19 +40,41 @@ class Run:
 
 
 class RunRegistry:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, archive: RunArchive | None = None) -> None:
         self._settings = settings
+        self._archive: RunArchive = archive or NullRunArchive()
         self._runs: dict[str, Run] = {}
         self._lock = asyncio.Lock()
 
     def _expired(self, run: Run) -> bool:
         return (time.monotonic() - run.created_at) > self._settings.run_ttl_seconds
 
+    @staticmethod
+    def _snapshot(run: Run) -> RunSnapshot:
+        return RunSnapshot(
+            run_id=run.run_id,
+            connection_id=run.connection_id,
+            status=run.status,
+            progress=run.progress,
+            engine=run.result.engine if run.result is not None else None,
+            error=run.error,
+            result=run.result,
+        )
+
+    async def _record(self, snapshot: RunSnapshot) -> None:
+        """Archive best-effort: a metadata DB fault must never fail a run."""
+        try:
+            await self._archive.record(snapshot)
+        except Exception:  # noqa: BLE001 - archival is not on the critical path
+            logger.warning("Could not archive run %s", snapshot.run_id, exc_info=True)
+
     async def create(self, connection_id: str) -> Run:
         run = Run(run_id=str(uuid.uuid4()), connection_id=connection_id)
         async with self._lock:
             self._runs[run.run_id] = run
             self._sweep_locked()
+            snapshot = self._snapshot(run)
+        await self._record(snapshot)
         return run
 
     async def get(self, run_id: str) -> Run | None:
@@ -87,6 +113,8 @@ class RunRegistry:
             run.recommendations = {
                 item.recommendation.id: item for item in recommendations
             }
+            snapshot = self._snapshot(run)
+        await self._record(snapshot)
 
     async def fail(self, run_id: str, message: str) -> None:
         async with self._lock:
@@ -96,6 +124,8 @@ class RunRegistry:
             run.status = "failed"
             run.error = message
             run.log = message
+            snapshot = self._snapshot(run)
+        await self._record(snapshot)
 
     async def find_recommendation(
         self, recommendation_id: str

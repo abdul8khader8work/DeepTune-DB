@@ -2,26 +2,25 @@
 
 import { create } from "zustand";
 import { initialQuery } from "@/lib/mock-plan";
-
-export type RunStatus = "idle" | "running" | "done";
+import type { OptimizationGoal } from "@/types/api";
 
 type QueryState = {
   query: string;
-  runStatus: RunStatus;
+  optimizationGoal: OptimizationGoal;
   setQuery: (query: string) => void;
   clearQuery: () => void;
   appendToken: (token: string) => void;
-  setRunStatus: (status: RunStatus) => void;
+  setOptimizationGoal: (goal: OptimizationGoal) => void;
 };
 
 export const useQueryStore = create<QueryState>((set) => ({
   query: initialQuery,
-  runStatus: "idle",
+  optimizationGoal: "balanced",
   setQuery: (query) => set({ query }),
   clearQuery: () => set({ query: "" }),
   appendToken: (token) =>
     set((state) => ({
       query: state.query.length > 0 ? `${state.query} ${token}` : token,
     })),
-  setRunStatus: (runStatus) => set({ runStatus }),
+  setOptimizationGoal: (optimizationGoal) => set({ optimizationGoal }),
 }));

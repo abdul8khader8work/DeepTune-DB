@@ -21,3 +21,15 @@ export function formatCompact(value: number): string {
 export function formatMs(value: number): string {
   return `${Math.round(value)}ms`;
 }
+
+/** 1_500_000 -> "1.4 MiB" */
+export function formatBytes(value: number): string {
+  if (value <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const exponent = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(value) / Math.log(1024)),
+  );
+  const scaled = value / 1024 ** exponent;
+  return `${scaled.toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}

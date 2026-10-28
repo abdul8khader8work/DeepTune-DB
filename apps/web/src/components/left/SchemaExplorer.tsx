@@ -11,21 +11,37 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { initiallyOpen, schema } from "@/lib/mock-schema";
+import { initiallyOpen, schema, type SchemaTable } from "@/lib/mock-schema";
 import { cn } from "@/lib/utils";
 import { useQueryStore } from "@/store/useQueryStore";
+import { useSessionStore } from "@/store/useSessionStore";
 
 export function SchemaExplorer() {
   const appendToken = useQueryStore((state) => state.appendToken);
+  const liveTables = useSessionStore((state) => state.tables);
+  const dbVersion = useSessionStore((state) => state.dbVersion);
   const [filter, setFilter] = useState("");
   const [openTables, setOpenTables] =
     useState<Record<string, boolean>>(initiallyOpen);
 
+  const tables = useMemo<SchemaTable[]>(() => {
+    if (liveTables.length === 0) return schema;
+    return liveTables.map((table) => ({
+      name: table.name,
+      columns: table.columns.map((column) => ({
+        name: column.name,
+        type: column.data_type.replace(/ (without|with) time zone$/, ""),
+        pk: column.is_primary_key,
+        indexed: column.existing_indexes.length > 0,
+      })),
+    }));
+  }, [liveTables]);
+
   const normalized = filter.trim().toLowerCase();
 
   const visibleTables = useMemo(() => {
-    if (!normalized) return schema;
-    return schema
+    if (!normalized) return tables;
+    return tables
       .map((table) => {
         const tableMatches = table.name.toLowerCase().includes(normalized);
         return {
@@ -42,7 +58,7 @@ export function SchemaExplorer() {
           table.name.toLowerCase().includes(normalized) ||
           table.columns.length > 0,
       );
-  }, [normalized]);
+  }, [normalized, tables]);
 
   const toggleTable = (name: string) =>
     setOpenTables((current) => ({ ...current, [name]: !current[name] }));
@@ -54,7 +70,9 @@ export function SchemaExplorer() {
           Schema
         </span>
         <span className="font-mono text-[10px] text-content-tertiary">
-          prod_db · 3 tables
+          {liveTables.length > 0
+            ? `${tables.length} tables`
+            : `sample · ${tables.length} tables`}
         </span>
       </div>
 
@@ -77,6 +95,14 @@ export function SchemaExplorer() {
           <div className="flex items-center gap-1.5 px-1.5 py-1 text-content-tertiary">
             <Folder className="h-3 w-3" aria-hidden />
             <span>public</span>
+            {dbVersion ? (
+              <span
+                className="ml-auto truncate text-[9px] text-content-disabled"
+                title={dbVersion}
+              >
+                {dbVersion.split(" ").slice(0, 2).join(" ")}
+              </span>
+            ) : null}
           </div>
 
           {visibleTables.map((table) => {
