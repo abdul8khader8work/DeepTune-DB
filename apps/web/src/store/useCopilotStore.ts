@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { copilotSocketUrl } from "@/lib/api";
 import type { CopilotFrame } from "@/types/api";
-import type { ChatMessage } from "@/types/graph";
+import type { ChatMessage, ToolCall } from "@/types/graph";
 
 type CopilotState = {
   messages: ChatMessage[];
@@ -34,6 +34,16 @@ function appendChunk(chunk: string): void {
   }));
 }
 
+function attachTool(tool: ToolCall): void {
+  if (!streamedMessageId) return;
+  const target = streamedMessageId;
+  useCopilotStore.setState((state) => ({
+    messages: state.messages.map((message) =>
+      message.id === target ? { ...message, tool } : message,
+    ),
+  }));
+}
+
 function handleFrame(frame: CopilotFrame): void {
   if (frame.type === "ready") {
     const id = nextId();
@@ -46,6 +56,15 @@ function handleFrame(frame: CopilotFrame): void {
   }
   if (frame.type === "token") {
     appendChunk(frame.text ?? "");
+    return;
+  }
+  if (frame.type === "tool") {
+    attachTool({
+      tool: frame.tool ?? "tool",
+      args: frame.args ?? "",
+      result: frame.result ?? "",
+      status: frame.status ?? "done",
+    });
     return;
   }
   if (frame.type === "done") {

@@ -4,6 +4,7 @@ Protocol (all frames are JSON objects):
 
 ``client -> server``  ``{"type": "question", "text": "why the join?"}``
 ``server -> client``  ``{"type": "ready", "engine": "gnn"}``
+``server -> client``  ``{"type": "tool", "tool": "read_plan", "args": "...", "result": "...", "status": "done"}``
 ``server -> client``  ``{"type": "token", "text": "The "}``
 ``server -> client``  ``{"type": "done", "run_id": "..."}``
 
@@ -12,6 +13,7 @@ parameter because browsers cannot set headers on a WebSocket handshake.
 """
 
 import logging
+from collections.abc import Sequence
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -46,6 +48,19 @@ def _authorised(websocket: WebSocket, state: AppState) -> bool:
     return True
 
 
+async def _emit(
+    websocket: WebSocket,
+    sentences: Sequence[str],
+    calls: Sequence[dict[str, str]],
+    delay_ms: int,
+) -> None:
+    """Send tool-call chips, then stream the prose that they justify."""
+    for call in calls:
+        await websocket.send_json({"type": "tool", **call})
+    async for token in explainer.stream(sentences, delay_ms):
+        await websocket.send_json({"type": "token", "text": token})
+
+
 @router.websocket("/ws/copilot/{run_id}")
 async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
     state = _state(websocket)
@@ -70,8 +85,12 @@ async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
         await websocket.send_json(
             {"type": "ready", "run_id": run_id, "engine": result.engine}
         )
-        async for token in explainer.stream(explainer.summary(result), delay):
-            await websocket.send_json({"type": "token", "text": token})
+        await _emit(
+            websocket,
+            explainer.summary(result),
+            explainer.tool_calls(None, result),
+            delay,
+        )
         await websocket.send_json({"type": "done", "run_id": run_id})
 
         while True:
@@ -79,8 +98,12 @@ async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
             question = str(frame.get("text", "")).strip() if isinstance(frame, dict) else ""
             if not question:
                 continue
-            async for token in explainer.stream(explainer.answer(question, result), delay):
-                await websocket.send_json({"type": "token", "text": token})
+            await _emit(
+                websocket,
+                explainer.answer(question, result),
+                explainer.tool_calls(question, result),
+                delay,
+            )
             await websocket.send_json({"type": "done", "run_id": run_id})
     except WebSocketDisconnect:
         logger.info("Copilot socket for run %s closed by the client", run_id)

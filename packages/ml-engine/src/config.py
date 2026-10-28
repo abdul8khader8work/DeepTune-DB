@@ -88,13 +88,12 @@ TARGET_LOG_BASE = math.e
 BEAM_WIDTH = 5
 MAX_INDEXES = 3
 TIE_MARGIN = 0.05
-# Calibrated in Phase 4 against real ``pg_total_relation_size`` values. A btree
-# entry costs ``8 bytes/column + 6`` per row while a heap tuple costs at least a
-# 24-byte header plus the column data, so *any* single-column index is
-# inherently ~15-30% of a narrow table. The Phase 3 value of 0.15 pruned every
-# realistic candidate; 0.40 admits 1-3 column indexes and still rejects wide
-# composites. See docs/phase-4-integration.md.
-STORAGE_BUDGET_RATIO = 0.40
+# The blueprint caps index storage at <15% of the table. A btree entry costs
+# ``8 bytes/column + 6`` per row, so the denominator must count real heap bytes
+# (tuple header + page overhead), not just the sum of column widths. That
+# sizing lives in ``parsers/schema.py``; with it, single-column indexes on
+# narrow tables fit inside 15% and wide composites are still rejected.
+STORAGE_BUDGET_RATIO = 0.15
 MAX_INDEXES_PER_WRITE_TABLE = 3
 MAX_CANDIDATES = 12
 MAX_PLAN_NODES = 5_000

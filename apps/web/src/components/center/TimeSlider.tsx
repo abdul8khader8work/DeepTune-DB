@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Pause, Play } from "lucide-react";
 import { planMetrics } from "@/lib/mock-plan";
 import { formatMs } from "@/lib/utils";
+import { useAnalysisStore } from "@/store/useAnalysisStore";
 import { useGraphStore } from "@/store/useGraphStore";
 
 const speeds = [0.5, 1, 2] as const;
@@ -13,6 +14,7 @@ export function TimeSlider() {
   const setView = useGraphStore((state) => state.setView);
   const sliderT = useGraphStore((state) => state.sliderT);
   const setSliderT = useGraphStore((state) => state.setSliderT);
+  const result = useAnalysisStore((state) => state.result);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<number>(1);
 
@@ -33,10 +35,11 @@ export function TimeSlider() {
   // while the "Current Plan" view is active.
   const progress = view === "optimized" ? 1 : sliderT;
 
-  const currentLatency = Math.round(
-    planMetrics.beforeMs +
-      (planMetrics.afterMs - planMetrics.beforeMs) * progress,
-  );
+  // Prefer the live run metrics; fall back to the Phase 1 sample so the slider
+  // still renders before the first analysis.
+  const beforeMs = result?.original_metrics.time_ms ?? planMetrics.beforeMs;
+  const afterMs = result?.optimized_metrics.time_ms ?? planMetrics.afterMs;
+  const currentLatency = Math.round(beforeMs + (afterMs - beforeMs) * progress);
 
   return (
     <div className="shrink-0 border-t border-subtle bg-surface-1 px-4 py-3">

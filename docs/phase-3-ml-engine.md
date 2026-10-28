@@ -68,7 +68,7 @@ rejects DML/DDL/transaction nodes. Predicates are extracted from `WHERE`, `JOIN 
 | Existing index | Single-column duplicate rejected |
 | Composite order | Only left prefixes of the ranked predicate list are emitted |
 | Access method | Equality/range → B-tree; JSON containment → GIN; optional equality → Hash |
-| Storage | Index estimate must stay below the configured budget (15% in Phase 3, recalibrated to 40% in Phase 4 — see `docs/phase-4-integration.md`) |
+| Storage | Index estimate must stay below the configured budget (15 % of the table, per the blueprint; see `docs/phase-4-integration.md` for the header-sizing fix) |
 | Write-heavy tables | At most 3 candidate indexes |
 | DDL | Only `CREATE INDEX CONCURRENTLY ... USING ...` text for user review |
 

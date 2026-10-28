@@ -182,8 +182,12 @@ export interface RevertResponse {
 
 /** Frames exchanged on `/api/v1/ws/copilot/{run_id}`. */
 export interface CopilotFrame {
-  type: "ready" | "token" | "done" | "error";
+  type: "ready" | "token" | "tool" | "done" | "error";
   text?: string;
   run_id?: string;
   engine?: EngineBackend;
+  tool?: string;
+  args?: string;
+  result?: string;
+  status?: "running" | "done" | "error";
 }

@@ -147,6 +147,74 @@ def answer(question: str, result: AnalysisResult) -> list[str]:
     return summary(result)
 
 
+def _tool(name: str, args: str, result: str) -> dict[str, str]:
+    return {"tool": name, "args": args, "result": result, "status": "done"}
+
+
+def _plan_tool(result: AnalysisResult) -> dict[str, str]:
+    return _tool(
+        "read_plan",
+        f"run {result.run_id}",
+        f"{len(result.original_dag)} → {len(result.optimized_dag)} nodes · "
+        f"{result.engine} engine",
+    )
+
+
+def _attention_tool(result: AnalysisResult) -> dict[str, str]:
+    hotspots = _hotspots(result)
+    detail = hotspots[0] if hotspots else "no attention weights recorded"
+    return _tool("gnn_attention", f"top {_MAX_HOTSPOTS} operators", detail)
+
+
+def _symbolic_tool(result: AnalysisResult) -> dict[str, str]:
+    kept = max(0, result.symbolic_candidate_count - len(result.rejected_candidates))
+    return _tool(
+        "symbolic_filter",
+        f"{result.symbolic_candidate_count} candidates",
+        f"{len(result.rejected_candidates)} pruned, {kept} kept",
+    )
+
+
+def _validation_tool(result: AnalysisResult) -> dict[str, str]:
+    if not result.recommendations:
+        return _tool("hypopg_validate", "no candidates", "skipped")
+    measured = [
+        item.validated_speedup_factor
+        for item in result.recommendations
+        if item.validated_speedup_factor
+    ]
+    detail = f"{max(measured):.2f}x measured" if measured else "not measured"
+    return _tool(
+        "hypopg_validate", f"{len(result.recommendations)} index(es)", detail
+    )
+
+
+def tool_calls(
+    question: str | None, result: AnalysisResult
+) -> list[dict[str, str]]:
+    """Deterministic tool trace for the copilot's UI chips.
+
+    The copilot never calls an LLM, so these frames document which slice of the
+    engine report the prose was derived from. ``question=None`` means the
+    opening summary.
+    """
+    calls = [_plan_tool(result)]
+    if question is None:
+        calls.extend([_attention_tool(result), _validation_tool(result)])
+        return calls
+
+    lowered = question.lower()
+    if any(token in lowered for token in ("why", "attention", "hotspot", "focus")):
+        calls.append(_attention_tool(result))
+    elif any(token in lowered for token in ("reject", "skip", "prune", "why not")):
+        calls.append(_symbolic_tool(result))
+    elif any(token in lowered for token in ("risk", "write", "storage", "safe", "danger")):
+        calls.append(_symbolic_tool(result))
+    elif any(token in lowered for token in ("index", "sql", "recommend", "create")):
+        calls.extend([_symbolic_tool(result), _validation_tool(result)])
+    return calls
+
+
 def chunk(sentences: Sequence[str]) -> list[str]:
     """Split sentences into whitespace-preserving word tokens."""
     tokens: list[str] = []

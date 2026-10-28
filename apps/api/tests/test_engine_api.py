@@ -117,14 +117,19 @@ def test_copilot_streams_the_explanation(
         assert ready["engine"] == "gnn"
 
         text = ""
+        tools = []
         while True:
             frame = socket.receive_json()
             if frame["type"] == "done":
                 break
-            text += frame["text"]
+            if frame["type"] == "token":
+                text += frame["text"]
+            elif frame["type"] == "tool":
+                tools.append(frame["tool"])
 
     assert "400" in text
     assert "CREATE INDEX CONCURRENTLY" in text
+    assert "read_plan" in tools
 
 
 def test_copilot_answers_a_follow_up_question(
@@ -142,13 +147,18 @@ def test_copilot_answers_a_follow_up_question(
 
         socket.send_json({"type": "question", "text": "what is the write risk?"})
         text = ""
+        tools = []
         while True:
             frame = socket.receive_json()
             if frame["type"] == "done":
                 break
-            text += frame["text"]
+            if frame["type"] == "token":
+                text += frame["text"]
+            elif frame["type"] == "tool":
+                tools.append(frame["tool"])
 
     assert "write amplification" in text.lower()
+    assert "symbolic_filter" in tools
 
 
 def test_copilot_rejects_a_missing_token(client: TestClient) -> None:

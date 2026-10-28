@@ -81,7 +81,7 @@ candidate. All three fixes are small, documented, and covered by tests.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Every candidate pruned: "storage overhead exceeds 15% of the table" | A btree entry costs `8·columns + 6` bytes/row while the catalog's "row width" summed only column data — no tuple header, no page overhead | `parsers/schema.py` adds `TUPLE_HEADER_BYTES = 24` and `PAGE_OVERHEAD_RATIO = 1.25` to the fallback size estimate, and `STORAGE_BUDGET_RATIO` moves 0.15 → **0.40** |
+| Every candidate pruned: "storage overhead exceeds 15% of the table" | A btree entry costs `8·columns + 6` bytes/row while the catalog's "row width" summed only column data — no tuple header, no page overhead — so the 15 % denominator was ~40 % too small | `parsers/schema.py` adds `TUPLE_HEADER_BYTES = 24` and `PAGE_OVERHEAD_RATIO = 1.25` to the fallback size estimate; `STORAGE_BUDGET_RATIO` stays at the blueprint's **15 %** |
 | Heatmap rendered flat: every node at 1.0 | GATv2 emits near-uniform attention on out-of-distribution plan shapes | `ml.apply_attention` detects a normalised spread below `0.08`, falls back to cost weighting, and appends a trace note |
 | Model metadata showed `layers: null` | `ModelConfig` names the field `layers`, not `num_layers` | loader reads `layers` |
 
@@ -96,6 +96,7 @@ entirely in the finished `AnalysisResult`, which keeps the feature offline and h
 ```
 client → {"type": "question", "text": "what is the write risk?"}
 server → {"type": "ready", "run_id": "...", "engine": "gnn"}
+server → {"type": "tool",  "tool": "read_plan", "args": "run ...", "result": "...", "status": "done"}
 server → {"type": "token", "text": "The "}      (word by word, COPILOT_STREAM_DELAY_MS apart)
 server → {"type": "done",  "run_id": "..."}
 ```
@@ -104,6 +105,9 @@ server → {"type": "done",  "run_id": "..."}
 - Close codes: `4401` missing/invalid token, `4404` unknown or unfinished run, `1011` internal fault.
 - Questions are routed by intent: attention/why, risk/write/storage, reject/prune, index/SQL, and
   slow/latency. Anything else returns the full summary.
+- Every answer is prefixed by deterministic `tool` frames (`read_plan`, `gnn_attention`,
+  `symbolic_filter`, `hypopg_validate`) that record which slice of the report the prose came from.
+  The UI renders them as tool-call chips above the message.
 - The socket explains; it never mutates state and never calls the model.
 
 ## 5. Run archive

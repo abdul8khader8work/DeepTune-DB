@@ -12,34 +12,47 @@ import "@xyflow/react/dist/style.css";
 import { QONode } from "@/components/center/QONode";
 import { QOEdge } from "@/components/center/QOEdge";
 import { planEdges, planNodes } from "@/lib/mock-plan";
-import { toFlow } from "@/lib/plan-adapter";
+import { blendPlans, toFlow, type PlanView } from "@/lib/plan-adapter";
 import { useAnalysisStore } from "@/store/useAnalysisStore";
 import { useGraphStore } from "@/store/useGraphStore";
 
 const nodeTypes = { qo: QONode };
 const edgeTypes = { qo: QOEdge };
 
+const samplePlan: PlanView = {
+  nodes: planNodes,
+  edges: planEdges,
+  maxCost: 0,
+  maxRows: 0,
+};
+
 export function QOGraph() {
   const result = useAnalysisStore((state) => state.result);
   const view = useGraphStore((state) => state.view);
+  const sliderT = useGraphStore((state) => state.sliderT);
   const locked = useGraphStore((state) => state.locked);
   const selectedNodeId = useGraphStore((state) => state.selectedNodeId);
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
   const { fitView } = useReactFlow();
 
-  const plan = useMemo(() => {
-    if (!result) {
-      return { nodes: planNodes, edges: planEdges };
-    }
-    const optimized: boolean = view === "optimized";
-    const dag = optimized ? result.optimized_dag : result.original_dag;
-    const dagEdges = optimized
-      ? result.edges
-      : result.original_edges.length > 0
-        ? result.original_edges
-        : result.edges;
-    return toFlow(dag, dagEdges);
-  }, [result, view]);
+  const original = useMemo<PlanView>(() => {
+    if (!result) return samplePlan;
+    const edges =
+      result.original_edges.length > 0 ? result.original_edges : result.edges;
+    return toFlow(result.original_dag, edges);
+  }, [result]);
+
+  const optimized = useMemo<PlanView>(() => {
+    if (!result) return samplePlan;
+    return toFlow(result.optimized_dag, result.edges);
+  }, [result]);
+
+  const plan = useMemo<PlanView>(() => {
+    if (!result) return samplePlan;
+    return view === "optimized"
+      ? optimized
+      : blendPlans(original, optimized, sliderT);
+  }, [original, optimized, result, sliderT, view]);
 
   const nodeCount = plan.nodes.length;
 
