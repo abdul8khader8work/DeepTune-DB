@@ -312,11 +312,24 @@ def generate_workload(
 
 
 def curriculum_tier(epoch: int, total_epochs: int) -> int:
-    """Blueprint curriculum: epochs 1-20 simple, 21-50 joins, 51+ complex."""
+    """Blueprint curriculum: epochs 1-20 simple, 21-50 joins, 51+ complex.
+
+    Short demo runs (``total_epochs <= 20``) compress the same simple -> joins
+    -> complex progression into thirds so a 20-epoch checkpoint still sees all
+    three tiers. The fixed 20/50 boundaries are preserved for full runs.
+    """
     if total_epochs <= 0:
         raise ValueError("total_epochs must be positive")
     if epoch < 1:
         raise ValueError("epoch must be positive")
+    if total_epochs <= 20:
+        first = math.ceil(total_epochs / 3)
+        second = math.ceil(2 * total_epochs / 3)
+        if epoch <= first:
+            return 1
+        if epoch <= second:
+            return 2
+        return 3
     if epoch <= 20:
         return 1
     if epoch <= 50:

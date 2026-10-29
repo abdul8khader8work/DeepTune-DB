@@ -92,28 +92,39 @@ discarded alternative is recorded as a `PruningRejection` so the UI can explain 
 - Target: `log1p(execution_time_ms)`; loss: `HuberLoss(delta=1.0)`.
 - Optimizer: AdamW, learning rate 1e-3, weight decay 1e-5.
 - Scheduler: `CosineAnnealingWarmRestarts(T_0=10, T_mult=1, eta_min=1e-5)`.
-- Curriculum: epochs 1–20 simple scans, 21–50 joins, 51+ complex multi-join plans.
+- Curriculum: epochs 1–20 simple scans, 21–50 joins, 51+ complex multi-join plans. Short runs
+  (`--epochs <= 20`) compress the same progression into thirds so every demo checkpoint sees all
+  three tiers.
 - Edge dropout 0.1 during training.
 - Validation mixes tiers 1–3; the best checkpoint is selected by validation Spearman ρ, not by a
   loss value.
+- Early stopping is tier-aware: stale-epoch counters reset at every tier transition and stopping is
+  only permitted in the final tier, so a tier-1 model can never halt the curriculum early.
 - The synthetic workload is a deterministic stand-in for real `EXPLAIN (ANALYZE)` data. It covers
   three tiers and uses a TPC-H-like demo catalog. Label noise is deliberately small so the reported
   rank correlation measures the model rather than irreducible generator noise.
 
 ### Measured results
 
-Checkpoint: `weights/demo-final.pt` (120 epochs, 400/500/800 samples per tier, seed 7).
-Metrics are on held-out synthetic plans; the GNN is a regressor, so accuracy is never reported.
+Checkpoint: `weights/demo-final.pt` — 120 epochs over **5,000 synthetic TPC-H-like QEP graphs**
+(`--train-per-tier 1500 1700 1800`), 150 validation and 200 held-out test graphs, seed 7.
+Architecture: GATv2, 3 layers, 128 hidden, 4 → 4 → 1 heads, Global Attention Pooling, dropout 0.2,
+126,210 parameters. Metrics are on held-out synthetic plans; the GNN is a regressor, so accuracy is
+never reported.
 
 | Split | MAE (ms) | RMSE (ms) | Spearman ρ | Median Q-error | MAPE |
 |---|---:|---:|---:|---:|---:|
-| Validation (mixed tiers) | 87.09 | 151.00 | **0.9901** | 1.130 | 13.01% |
-| Test, tier 3 (training run, n=200) | 167.77 | 225.59 | **0.9274** | 1.142 | 13.16% |
-| Test, tier 1 (`--seed 999`) | 16.82 | 28.48 | **0.9821** | 1.163 | — |
-| Test, tier 2 (`--seed 999`) | 75.24 | 97.10 | **0.9602** | 1.146 | — |
-| Test, tier 3 (`--seed 999`) | 160.83 | 226.08 | **0.9071** | 1.122 | — |
+| Validation (mixed tiers) | 52.18 | 84.84 | **0.9935** | 1.072 | 7.86% |
+| Test, mixed tiers (training run, n=200) | 91.22 | 124.72 | **0.9643** | 1.068 | 7.60% |
+| Test, tier 1 (`--seed 999`) | 11.48 | 20.09 | **0.9862** | 1.088 | 9.22% |
+| Test, tier 2 (`--seed 999`) | 44.45 | 59.64 | **0.9678** | 1.072 | 8.07% |
+| Test, tier 3 (`--seed 999`) | 89.67 | 137.34 | **0.9561** | 1.061 | 7.57% |
 
-The target ρ > 0.85 is met on every tier. The checkpoint is not committed (`*.pt` and
+The Enforcer's target ρ > 0.85 is met on every tier, and the shipped checkpoint also beats the
+previous 110-epoch / 1,700-graph checkpoint (test ρ 0.9274) on every metric. `make ml-train` is the
+literal 20-epoch Patch 0 recipe; `make ml-train-full` is the 120-epoch quality-gated recipe that
+produced this checkpoint. A 20-epoch run reaches ρ ≈ 0.67 on the held-out test split, so it is kept
+only as a smoke recipe and never shipped. The checkpoint is not committed (`*.pt` and
 `packages/ml-engine/weights/` are git-ignored).
 
 ## Inference facade
@@ -140,10 +151,11 @@ Run from `packages/ml-engine/` with Python 3.11:
 
 | Command | Result |
 |---|---|
-| `python -m pytest` | **70 passed** (parser, pruning, model, beam, metrics, workload, inference, boundary checks) |
+| `python -m pytest` | **71 passed** (parser, pruning, model, beam, metrics, workload, curriculum, inference, boundary checks) |
 | `python -m compileall -q src tests` | Pass |
-| `python -m training.train --epochs 120 --train-per-tier 400 500 800 --val-size 150 --test-size 200 --out weights/demo-final.pt` | Completes; writes checkpoint + `.metrics.json` |
-| `python -m training.evaluate --checkpoint weights/demo-final.pt --tier 3` | ρ = 0.91–0.93 on held-out plans |
+| `python -m training.train --epochs 120 --train-per-tier 1500 1700 1800 --val-size 150 --test-size 200 --out weights/demo-final.pt` | Completes; builds 5,000 synthetic graphs and writes checkpoint + `.metrics.json` |
+| `python -m training.train --epochs 20 --train-per-tier 1500 1700 1800 ...` | Completes (smoke recipe, all three tiers seen) |
+| `python -m training.evaluate --checkpoint weights/demo-final.pt --tier 3` | ρ = 0.956 on held-out plans (tiers 1/2: 0.986 / 0.968) |
 
 Not executed on this machine: a real PostgreSQL/hypopg round-trip. Docker and the `hypopg`
 extension are unavailable locally, so Phase 3 ships the deterministic `HeuristicPlanBuilder` and

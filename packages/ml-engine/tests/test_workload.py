@@ -54,6 +54,15 @@ def test_curriculum_boundaries() -> None:
     assert curriculum_tier(60, 60) == 3
 
 
+def test_curriculum_compresses_for_short_runs() -> None:
+    assert curriculum_tier(1, 20) == 1
+    assert curriculum_tier(7, 20) == 1
+    assert curriculum_tier(8, 20) == 2
+    assert curriculum_tier(14, 20) == 2
+    assert curriculum_tier(15, 20) == 3
+    assert curriculum_tier(20, 20) == 3
+
+
 @pytest.mark.parametrize("tier", [0, 4, -1])
 def test_invalid_tier_raises(tier: int) -> None:
     with pytest.raises(ValueError):

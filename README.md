@@ -203,17 +203,19 @@ containers. On POSIX use `.venv/bin/python` instead of `.venv/Scripts/python`.
 cd packages/ml-engine
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-dev.txt
-.venv/Scripts/python -m pytest                         # 70 tests
+.venv/Scripts/python -m pytest                         # 71 tests
 PYTHONPATH=src .venv/Scripts/python -m training.train \
-  --epochs 120 --train-per-tier 400 500 800 --out weights/demo-final.pt
+  --epochs 120 --train-per-tier 1500 1700 1800 \
+  --val-size 150 --test-size 200 --out weights/demo-final.pt
 PYTHONPATH=src .venv/Scripts/python -m training.evaluate \
   --checkpoint weights/demo-final.pt --tier 3
 ```
 
 The engine is CPU-only and does not need Docker. Training uses a deterministic synthetic EXPLAIN
-workload; Phase 4 replaces it with real `EXPLAIN (ANALYZE)` data and hypopg-modified plans. The
-root `Makefile` exposes the same flow as `make ml-install`, `make ml-test`, `make ml-train`, and
-`make ml-eval`.
+workload: 5,000 TPC-H-like QEP graphs across three curriculum tiers. Phase 4 replaces it with real
+`EXPLAIN (ANALYZE)` data and hypopg-modified plans. The root `Makefile` exposes the same flow as
+`make ml-install`, `make ml-test`, `make ml-train` (20-epoch smoke recipe), `make ml-train-full`
+(120-epoch shipped recipe), and `make ml-eval`.
 
 ---
 

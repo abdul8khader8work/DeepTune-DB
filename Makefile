@@ -1,4 +1,4 @@
-.PHONY: install dev build lint typecheck clean api-install api-test api-run ml-install ml-test ml-train ml-eval up down logs
+.PHONY: install dev build lint typecheck clean api-install api-test api-run ml-install ml-test ml-train ml-train-full ml-eval up down logs
 
 install:
 	cd apps/web && npm install
@@ -41,8 +41,13 @@ ml-install:
 ml-test:
 	cd packages/ml-engine && .venv/Scripts/python -m pytest
 
+# Patch 0 quick recipe: 20 epochs, 5,000 synthetic TPC-H-like graphs.
 ml-train:
-	cd packages/ml-engine && PYTHONPATH=src .venv/Scripts/python -m training.train --epochs 120 --train-per-tier 400 500 800 --val-size 150 --test-size 200 --out weights/demo-final.pt
+	cd packages/ml-engine && PYTHONPATH=src .venv/Scripts/python -m training.train --epochs 20 --train-per-tier 1500 1700 1800 --val-size 150 --test-size 200 --out weights/demo-final.pt
+
+# Quality-gated recipe used for the shipped checkpoint (Enforcer target rho > 0.85).
+ml-train-full:
+	cd packages/ml-engine && PYTHONPATH=src .venv/Scripts/python -m training.train --epochs 120 --train-per-tier 1500 1700 1800 --val-size 150 --test-size 200 --out weights/demo-final.pt
 
 ml-eval:
 	cd packages/ml-engine && PYTHONPATH=src .venv/Scripts/python -m training.evaluate --checkpoint weights/demo-final.pt --tier 3

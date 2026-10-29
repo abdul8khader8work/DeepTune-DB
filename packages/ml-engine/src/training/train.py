@@ -1,7 +1,13 @@
 """Curriculum training CLI for the GATv2 cost model.
 
+There is no external dataset to load: the Phase 3 generator in
+``training.workload`` is the synthetic fallback and always produces TPC-H-like
+QEP graphs. The defaults below build 5,000 training graphs (1,500 / 1,700 /
+1,800 across the three curriculum tiers), so a fresh checkout can train without
+a database or a downloaded corpus.
+
 Example (from packages/ml-engine):
-    PYTHONPATH=src python -m training.train --epochs 60 --out weights/gatv2-demo.pt
+    PYTHONPATH=src python -m training.train --epochs 20 --out weights/demo-final.pt
 """
 
 from __future__ import annotations
@@ -93,16 +99,26 @@ def train(args: argparse.Namespace) -> dict[str, float]:
     best_metrics: dict[str, float] = {}
     best_epoch = 0
     stale_epochs = 0
+    tier_best = float("-inf")
+    active_tier = 0
     output = Path(args.out)
 
     print(
         f"model parameters={parameter_count(model)} device={args.device} "
         f"train={[len(tier_datasets[tier]) for tier in (1, 2, 3)]} "
+        f"synthetic_total={sum(len(tier_datasets[tier]) for tier in (1, 2, 3))} "
         f"val={len(validation)} test={len(test)}"
     )
 
     for epoch in range(1, args.epochs + 1):
         tier = curriculum_tier(epoch, args.epochs)
+        if tier != active_tier:
+            # Early stopping must not fire while the curriculum is still
+            # introducing harder tiers: a tier-1 model scores poorly on the
+            # mixed validation set and would otherwise stop before tier 2.
+            active_tier = tier
+            tier_best = float("-inf")
+            stale_epochs = 0
         training = concat_datasets(
             *(tier_datasets[level] for level in range(1, tier + 1))
         )
@@ -139,11 +155,11 @@ def train(args: argparse.Namespace) -> dict[str, float]:
             f"lr={learning_rate:.2e}"
         )
 
-        if metrics["spearman_rho"] > best_score:
-            best_score = metrics["spearman_rho"]
+        score = metrics["spearman_rho"]
+        if score > best_score:
+            best_score = score
             best_metrics = metrics
             best_epoch = epoch
-            stale_epochs = 0
             save_checkpoint(
                 output,
                 model,
@@ -156,9 +172,14 @@ def train(args: argparse.Namespace) -> dict[str, float]:
                     "curriculum": "1-20 simple, 21-50 joins, 51+ complex",
                 },
             )
+        if score > tier_best:
+            tier_best = score
+            stale_epochs = 0
         else:
             stale_epochs += 1
-            if args.patience > 0 and stale_epochs >= args.patience:
+            # Only the final tier may stop early; earlier tiers must run to
+            # completion so the curriculum can advance.
+            if args.patience > 0 and stale_epochs >= args.patience and tier >= 3:
                 print(f"early stopping at epoch {epoch} (best epoch {best_epoch})")
                 break
 
@@ -198,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
-        "--train-per-tier", type=int, nargs=3, default=(400, 500, 600)
+        "--train-per-tier", type=int, nargs=3, default=(1500, 1700, 1800)
     )
     parser.add_argument("--val-size", type=int, default=120)
     parser.add_argument("--test-size", type=int, default=200)

@@ -160,7 +160,7 @@ Behaviour details:
 | Command | Result |
 |---|---|
 | `apps/api`: `python -m pytest` | **59 passed** |
-| `packages/ml-engine`: `python -m pytest` | **70 passed** |
+| `packages/ml-engine`: `python -m pytest` | **71 passed** |
 | `apps/web`: `npm run typecheck` | Clean (strict, `noUncheckedIndexedAccess`) |
 | `apps/web`: `npm run build` | Compiled successfully; `/` at 148 kB |
 | Engine smoke (no DB) | 126,210 params, layers 3, heads 4; 3 symbolic candidates; 1 recommendation `idx_orders_status_customer_id`; 1.31× predicted; optimized DAG + edges + trace correct; near-uniform attention flagged |
