@@ -17,6 +17,7 @@ async def engine_status(request: Request) -> EngineStatusResponse:
         backend=status.backend,
         label=status.label,
         device=status.device,
+        runtime=status.runtime,
         checkpoint=status.checkpoint,
         model_version=status.model_version,
         parameters=status.parameters,

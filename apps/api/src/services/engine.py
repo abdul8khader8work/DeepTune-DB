@@ -66,6 +66,7 @@ class EngineStatus:
     layers: int | None
     heads: int | None
     error: str | None = None
+    runtime: str = "torch"
 
     @property
     def label(self) -> str:
@@ -98,6 +99,7 @@ def _unavailable(status: EngineStatus, reason: str) -> EngineBundle:
             layers=None,
             heads=None,
             error=reason,
+            runtime="heuristic",
         ),
     )
 
@@ -123,18 +125,25 @@ def _ensure_importable(src: Path) -> None:
         sys.path.append(entry)
 
 
-def _describe(optimizer: Any) -> tuple[str | None, int | None, int | None, int | None, int | None]:
+def _describe(
+    optimizer: Any,
+) -> tuple[str | None, int | None, int | None, int | None, int | None, str]:
     config = getattr(optimizer, "model_config", None)
     metadata = getattr(optimizer, "metadata", {}) or {}
     version = str(metadata.get("version") or metadata.get("run_name") or "v1.0")
-    parameters = getattr(optimizer, "_model", None)
-    count = None
-    if parameters is not None and hasattr(parameters, "parameters"):
-        count = sum(p.numel() for p in parameters.parameters())
+    count = getattr(optimizer, "parameter_count", None)
+    if not isinstance(count, int):
+        model = getattr(optimizer, "_model", None)
+        count = (
+            sum(p.numel() for p in model.parameters())
+            if model is not None and hasattr(model, "parameters")
+            else None
+        )
+    runtime = str(getattr(optimizer, "runtime", "torch"))
     hidden = getattr(config, "hidden_dim", None)
     layers = getattr(config, "layers", None)
     heads = getattr(config, "heads", None)
-    return version, count, hidden, layers, heads
+    return version, count, hidden, layers, heads, runtime
 
 
 def load_engine(settings: Settings) -> EngineBundle:
@@ -150,6 +159,7 @@ def load_engine(settings: Settings) -> EngineBundle:
         hidden_dim=None,
         layers=None,
         heads=None,
+        runtime="heuristic",
     )
 
     if not settings.ml_enabled:
@@ -179,11 +189,12 @@ def load_engine(settings: Settings) -> EngineBundle:
         logger.exception("ML engine failed to load")
         return _unavailable(base, f"{exc.__class__.__name__}: {exc}")
 
-    version, count, hidden, layers, heads = _describe(optimizer)
+    version, count, hidden, layers, heads, runtime = _describe(optimizer)
     logger.info(
-        "ML engine ready: GATv2 %s on %s (%s parameters)",
+        "ML engine ready: GATv2 %s on %s via %s (%s parameters)",
         version,
         settings.ml_device,
+        runtime,
         f"{count:,}" if count else "unknown",
     )
     return EngineBundle(
@@ -200,5 +211,6 @@ def load_engine(settings: Settings) -> EngineBundle:
             layers=layers,
             heads=heads,
             error=None,
+            runtime=runtime,
         ),
     )

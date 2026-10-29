@@ -14,6 +14,9 @@ os.environ.update(
         "SHADOW_DB_DSN": "",
         "ANALYZE_RATE_LIMIT": "1000/minute",
         "CORS_ORIGINS": "http://localhost:3000",
+        # The copilot's typing illusion is wall-clock; tests must not wait on it.
+        "COPILOT_STREAM_DELAY_MS": "0",
+        "COPILOT_THINKING_DELAY_MS": "0",
     }
 )
 

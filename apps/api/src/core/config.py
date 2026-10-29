@@ -50,7 +50,9 @@ class Settings(BaseSettings):
     ml_checkpoint_path: str = ""
     ml_device: str = "cpu"
     ml_attention_nodes: int = 10
-    copilot_stream_delay_ms: int = 18
+    copilot_stream_delay_ms: int = 20
+    #: Pause before each tool call so the copilot reads as an agent, not a script.
+    copilot_thinking_delay_ms: int = 500
 
     @property
     def cors_origin_list(self) -> list[str]:

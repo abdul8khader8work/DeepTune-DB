@@ -39,5 +39,6 @@ export type ChatMessage = {
   id: string;
   role: ChatRole;
   text: string;
-  tool?: ToolCall;
+  /** Every tool frame becomes its own chip, in arrival order. */
+  tools?: ToolCall[];
 };

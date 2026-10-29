@@ -1,5 +1,7 @@
 """Phase 4 endpoints: engine status and the streaming copilot socket."""
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -103,6 +105,18 @@ def test_engine_status_reports_the_loaded_checkpoint(client: TestClient) -> None
         assert body["error"]
 
 
+def test_engine_status_reports_the_inference_runtime(client: TestClient) -> None:
+    body = client.get("/api/v1/engine/status").json()
+    assert body["runtime"] in {"onnx", "torch", "heuristic"}
+    if body["available"]:
+        assert body["runtime"] in {"onnx", "torch"}
+        # A checkpoint with a sibling .onnx must be scored by onnxruntime.
+        if body["checkpoint"] and Path(f"{body['checkpoint']}.onnx").is_file():
+            assert body["runtime"] == "onnx"
+    else:
+        assert body["runtime"] == "heuristic"
+
+
 def test_copilot_streams_the_explanation(
     client: TestClient, settings: Settings
 ) -> None:
@@ -130,6 +144,33 @@ def test_copilot_streams_the_explanation(
     assert "400" in text
     assert "CREATE INDEX CONCURRENTLY" in text
     assert "read_plan" in tools
+
+
+def test_copilot_thinks_before_every_tool_and_streams_in_small_chunks(
+    client: TestClient, settings: Settings
+) -> None:
+    _seed_run(client)
+    token = create_access_token("pytest", settings)
+
+    frames = []
+    with client.websocket_connect(
+        f"/api/v1/ws/copilot/run-test?token={token}"
+    ) as socket:
+        socket.receive_json()
+        while True:
+            frame = socket.receive_json()
+            if frame["type"] == "done":
+                break
+            frames.append(frame)
+
+    tool_positions = [index for index, frame in enumerate(frames) if frame["type"] == "tool"]
+    assert tool_positions
+    for position in tool_positions:
+        assert frames[position - 1]["type"] == "thinking"
+
+    chunks = [frame["text"] for frame in frames if frame["type"] == "token"]
+    assert chunks
+    assert all(0 < len(chunk) <= 3 for chunk in chunks)
 
 
 def test_copilot_answers_a_follow_up_question(

@@ -145,14 +145,56 @@ report.rejected             # symbolic pruning audit trail
 `PlanOptimizer.rank_configurations` exposes the ranked list without building recommendation text.
 `load_optimizer` mirrors the Phase 4 lifespan usage.
 
+## ONNX export and inference (Patch 1)
+
+`torch.onnx.export` cannot trace `GATv2Conv` or `GlobalAttentionPooling` as written: both turn
+tensors into Python ints mid-graph (`maybe_num_nodes` -> `int(edge_index.max()) + 1`, and
+`batch.max().item()`). The tracer bakes the *trace-time* graph size into the artifact, so every plan
+with a different node count is silently wrong — measured drift up to 5.07 in log-latency space
+(≈160x in milliseconds) while the export itself reports success.
+
+`src/models/onnx.py` therefore exports `OnnxExportModel`, a tensor-in/tensor-out mirror of the GATv2
+forward that reuses the trained parameters by reference and stays shape-polymorphic:
+
+| Naive PyG op | ONNX-safe replacement | Why |
+|---|---|---|
+| `scatter_add` / `index_add` | dense `[E, N]` indicator + `matmul` | ONNX leaves duplicate `ScatterElements` indices undefined |
+| `torch_geometric.softmax` | per-target max + indicator normalisation | a global max underflows after two layers (score range > 300 nats) |
+| `add_self_loops(fill_value='mean')` | per-target mean of incoming edge attributes | the loop feature is the mean of *in-edges*, not of the whole graph |
+
+Verification is part of the export: `export_onnx(..., verify=True)` scores the trace graph through
+onnxruntime, compares against the PyTorch forward, and deletes the artifact if the drift exceeds
+`1e-3`. `tests/test_onnx.py` additionally checks 18 plans spanning 2–12 nodes, the attention output,
+and the embedded metadata.
+
+```bash
+cd packages/ml-engine
+PYTHONPATH=src .venv/Scripts/python -m training.export_onnx \
+  --checkpoint weights/demo-final.pt --out weights/demo-final.onnx   # or: make ml-export
+```
+
+Measured on this machine (CPU, single thread, 36 plans of 2–12 nodes, 50 repeats each):
+
+| Runtime | Median per plan | Max per plan |
+|---|---:|---:|
+| onnxruntime 1.31 (opset 17, 537,991 bytes) | **0.376 ms** | 0.519 ms |
+| PyTorch 2.15 forward | 3.827 ms | 4.048 ms |
+
+Worst `|torch - onnx|` across those 36 plans is `9.5e-07` log-latency units; attention drift is
+`3.6e-07`. `PlanOptimizer` prefers `<checkpoint>.onnx` when it exists, keeps the `.pt` loaded for
+metadata/config and for edge-less (single-node) plans where the attention softmax has nothing to
+normalise, and reports the active path as `runtime` (`onnx` / `torch` / `heuristic`) in
+`GET /api/v1/engine/status`. A corrupt or missing artifact degrades to torch and logs, never raises.
+
 ## Verification
 
 Run from `packages/ml-engine/` with Python 3.11:
 
 | Command | Result |
 |---|---|
-| `python -m pytest` | **71 passed** (parser, pruning, model, beam, metrics, workload, curriculum, inference, boundary checks) |
+| `python -m pytest` | **79 passed** (parser, pruning, model, beam, metrics, workload, curriculum, inference, ONNX export/parity, boundary checks) |
 | `python -m compileall -q src tests` | Pass |
+| `python -m training.export_onnx --checkpoint weights/demo-final.pt --out weights/demo-final.onnx` | Verified export, opset 17, metadata embedded, median 0.32 ms |
 | `python -m training.train --epochs 120 --train-per-tier 1500 1700 1800 --val-size 150 --test-size 200 --out weights/demo-final.pt` | Completes; builds 5,000 synthetic graphs and writes checkpoint + `.metrics.json` |
 | `python -m training.train --epochs 20 --train-per-tier 1500 1700 1800 ...` | Completes (smoke recipe, all three tiers seen) |
 | `python -m training.evaluate --checkpoint weights/demo-final.pt --tier 3` | ρ = 0.956 on held-out plans (tiers 1/2: 0.986 / 0.968) |
@@ -170,6 +212,7 @@ synthetic workload; Phase 4 supplies real hypopg plans through the same interfac
 - [x] No regex SQL sanitising; `sqlglot` AST + single read-only `SELECT` only.
 - [x] No DDL is applied to a target database; only `CREATE INDEX CONCURRENTLY` text is emitted.
 - [x] Model loaded once by `PlanOptimizer`; all inference under `torch.no_grad()`.
+- [x] ONNX export is parity-gated against the PyTorch forward (drift > `1e-3` deletes the artifact).
 - [x] Metrics are MAE, RMSE, Spearman ρ, median Q-error, and MAPE; no accuracy metric.
 - [x] Weights and checkpoints are git-ignored.
 - [x] `CREATE INDEX CONCURRENTLY`, the storage budget, the 3-index write-heavy cap, and the 5% tie-break are

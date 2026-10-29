@@ -215,19 +215,31 @@ def tool_calls(
     return calls
 
 
-def chunk(sentences: Sequence[str]) -> list[str]:
-    """Split sentences into whitespace-preserving word tokens."""
-    tokens: list[str] = []
-    for sentence in sentences:
-        for word in sentence.split(" "):
-            tokens.append(word + " ")
-    return tokens
+#: Characters per WebSocket frame. One frame per character makes the browser
+#: re-render ~5x more often than a human can perceive, so the stream is chunked.
+CHUNK_SIZE = 3
+
+
+def chunk(sentences: Sequence[str], size: int = CHUNK_SIZE) -> list[str]:
+    """Flatten sentences into fixed-width chunks, preserving whitespace.
+
+    Joining the chunks back together reproduces the input exactly, so the UI
+    never loses a space at a boundary.
+    """
+    text = " ".join(sentences)
+    width = max(1, size)
+    return [text[index : index + width] for index in range(0, len(text), width)]
 
 
 async def stream(sentences: Sequence[str], delay_ms: int) -> AsyncIterator[str]:
-    """Yield word tokens with a small delay so the UI can render a typewriter."""
+    """Yield chunks with a per-character delay so the UI can render a typewriter.
+
+    ``delay_ms`` is the *per character* budget (default 20 ms), so a 3-character
+    chunk costs 60 ms — roughly 50 characters per second, which is the pace a
+    human reads a generated paragraph at.
+    """
     delay = max(0, delay_ms) / 1000
     for token in chunk(sentences):
         if delay:
-            await asyncio.sleep(delay)
+            await asyncio.sleep(delay * len(token))
         yield token

@@ -39,12 +39,15 @@ export interface HealthResponse {
   metadata_store: string;
 }
 
+export type EngineRuntime = "onnx" | "torch" | "heuristic";
+
 export interface EngineStatus {
   enabled: boolean;
   available: boolean;
   backend: EngineBackend;
   label: string;
   device: string;
+  runtime: EngineRuntime;
   checkpoint: string | null;
   model_version: string | null;
   parameters: number | null;
@@ -182,7 +185,7 @@ export interface RevertResponse {
 
 /** Frames exchanged on `/api/v1/ws/copilot/{run_id}`. */
 export interface CopilotFrame {
-  type: "ready" | "token" | "tool" | "done" | "error";
+  type: "ready" | "thinking" | "token" | "tool" | "done" | "error";
   text?: string;
   run_id?: string;
   engine?: EngineBackend;

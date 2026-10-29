@@ -1,4 +1,4 @@
-.PHONY: install dev build lint typecheck clean api-install api-test api-run ml-install ml-test ml-train ml-train-full ml-eval up down logs
+.PHONY: install dev build lint typecheck clean api-install api-test api-run ml-install ml-test ml-train ml-train-full ml-eval ml-export up down logs
 
 install:
 	cd apps/web && npm install
@@ -51,6 +51,11 @@ ml-train-full:
 
 ml-eval:
 	cd packages/ml-engine && PYTHONPATH=src .venv/Scripts/python -m training.evaluate --checkpoint weights/demo-final.pt --tier 3
+
+# Patch 1: parity-gated ONNX export; the API scores plans with onnxruntime when the
+# artifact sits next to the checkpoint. The .onnx file is git-ignored like the .pt.
+ml-export:
+	cd packages/ml-engine && PYTHONPATH=src .venv/Scripts/python -m training.export_onnx --checkpoint weights/demo-final.pt --out weights/demo-final.onnx
 
 up:
 	docker compose up -d --build

@@ -4,14 +4,19 @@ Protocol (all frames are JSON objects):
 
 ``client -> server``  ``{"type": "question", "text": "why the join?"}``
 ``server -> client``  ``{"type": "ready", "engine": "gnn"}``
+``server -> client``  ``{"type": "thinking"}``
 ``server -> client``  ``{"type": "tool", "tool": "read_plan", "args": "...", "result": "...", "status": "done"}``
 ``server -> client``  ``{"type": "token", "text": "The "}``
 ``server -> client``  ``{"type": "done", "run_id": "..."}``
+
+A ``thinking`` frame always precedes a ``tool`` frame by a short pause; the
+client clears its indicator as soon as any other frame arrives.
 
 Auth uses the same HS256 token as the REST surface, passed as a query
 parameter because browsers cannot set headers on a WebSocket handshake.
 """
 
+import asyncio
 import logging
 from collections.abc import Sequence
 
@@ -53,9 +58,19 @@ async def _emit(
     sentences: Sequence[str],
     calls: Sequence[dict[str, str]],
     delay_ms: int,
+    thinking_delay_ms: int,
 ) -> None:
-    """Send tool-call chips, then stream the prose that they justify."""
+    """Think, send tool-call chips, then stream the prose that they justify.
+
+    Each tool call is preceded by a ``thinking`` frame and a pause, which is what
+    makes the deterministic template read like an agent deciding what to look at
+    next. The UI clears the indicator on the next frame of any other type.
+    """
+    thinking = max(0, thinking_delay_ms) / 1000
     for call in calls:
+        await websocket.send_json({"type": "thinking"})
+        if thinking:
+            await asyncio.sleep(thinking)
         await websocket.send_json({"type": "tool", **call})
     async for token in explainer.stream(sentences, delay_ms):
         await websocket.send_json({"type": "token", "text": token})
@@ -80,6 +95,7 @@ async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
     await websocket.accept()
     result = run.result
     delay = state.settings.copilot_stream_delay_ms
+    thinking = state.settings.copilot_thinking_delay_ms
 
     try:
         await websocket.send_json(
@@ -90,6 +106,7 @@ async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
             explainer.summary(result),
             explainer.tool_calls(None, result),
             delay,
+            thinking,
         )
         await websocket.send_json({"type": "done", "run_id": run_id})
 
@@ -103,6 +120,7 @@ async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
                 explainer.answer(question, result),
                 explainer.tool_calls(question, result),
                 delay,
+                thinking,
             )
             await websocket.send_json({"type": "done", "run_id": run_id})
     except WebSocketDisconnect:

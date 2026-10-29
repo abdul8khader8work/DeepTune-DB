@@ -13,19 +13,18 @@ import { useCopilotStore } from "@/store/useCopilotStore";
 export function CopilotChat() {
   const messages = useCopilotStore((state) => state.messages);
   const streaming = useCopilotStore((state) => state.streaming);
+  const thinking = useCopilotStore((state) => state.thinking);
   const send = useCopilotStore((state) => state.send);
   const clear = useCopilotStore((state) => state.clear);
   const result = useAnalysisStore((state) => state.result);
   const [value, setValue] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
-  const lastCount = useRef(0);
+  const last = messages[messages.length - 1];
+  const lastLength = last ? last.text.length + (last.tools?.length ?? 0) : 0;
 
   useEffect(() => {
-    if (messages.length > lastCount.current) {
-      bottomRef.current?.scrollIntoView({ block: "end" });
-    }
-    lastCount.current = messages.length;
-  }, [messages]);
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [messages.length, lastLength, thinking]);
 
   const submit = () => {
     const text = value.trim();
@@ -34,8 +33,7 @@ export function CopilotChat() {
     setValue("");
   };
 
-  const last = messages[messages.length - 1];
-  const thinking = streaming && last !== undefined && last.text.length === 0;
+  const caret = streaming && last !== undefined && last.text.length > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -85,8 +83,20 @@ export function CopilotChat() {
                     : "ml-6 bg-content-primary text-content-inverse",
                 )}
               >
-                <p>{message.text}</p>
-                {message.tool ? <ToolCallChip tool={message.tool} /> : null}
+                {message.tools?.map((tool, index) => (
+                  <ToolCallChip key={`${message.id}-${tool.tool}-${index}`} tool={tool} />
+                ))}
+                {message.text || (caret && message.id === last?.id) ? (
+                  <p className={message.tools?.length ? "mt-2" : undefined}>
+                    {message.text}
+                    {caret && message.id === last?.id ? (
+                      <span
+                        className="ml-0.5 inline-block h-3 w-[3px] animate-pulse-dot bg-ai align-middle"
+                        aria-hidden
+                      />
+                    ) : null}
+                  </p>
+                ) : null}
               </div>
             ))
           )}
@@ -94,7 +104,8 @@ export function CopilotChat() {
           {thinking ? (
             <div className="flex items-center gap-1.5 rounded-md border border-subtle bg-surface-2 px-2 py-1.5 text-[10px] text-content-tertiary">
               <span className="h-1 w-1 animate-pulse-dot rounded-full bg-ai" />
-              Reading the engine report…
+              <span className="text-ai">thinking</span>
+              <span className="animate-pulse-dot">…</span>
             </div>
           ) : null}
           <div ref={bottomRef} />

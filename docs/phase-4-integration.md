@@ -39,7 +39,9 @@ Monaco SQL ──▶ POST /queries/analyze ──▶ sqlglot guard ──▶ EXP
 - The loader is total: `ML_ENABLED=false`, a missing source tree, a missing checkpoint, or a corrupt
   file all produce `EngineStatus(backend="heuristic", error=...)` instead of a failed startup.
 - `GET /api/v1/engine/status` is public (the shell needs it before a token is pasted) and reports
-  backend, device, checkpoint, parameter count, hidden width, layer count, and head count.
+  backend, device, runtime, checkpoint, parameter count, hidden width, layer count, and head count.
+  `runtime` is `onnx` when `weights/demo-final.onnx` sits next to the checkpoint, `torch` when only the
+  `.pt` is present, and `heuristic` when nothing loaded. The status bar renders it as a small badge.
 
 `apps/api/src/services/ml.py` is the only bridge between the engine and the API contracts. It is
 torch-free and engine-import-free at module scope, so it is unit-testable with plain fakes:
@@ -96,8 +98,9 @@ entirely in the finished `AnalysisResult`, which keeps the feature offline and h
 ```
 client → {"type": "question", "text": "what is the write risk?"}
 server → {"type": "ready", "run_id": "...", "engine": "gnn"}
+server → {"type": "thinking"}
 server → {"type": "tool",  "tool": "read_plan", "args": "run ...", "result": "...", "status": "done"}
-server → {"type": "token", "text": "The "}      (word by word, COPILOT_STREAM_DELAY_MS apart)
+server → {"type": "token", "text": "The "}      (3-char chunks, 20 ms per character)
 server → {"type": "done",  "run_id": "..."}
 ```
 
@@ -109,6 +112,23 @@ server → {"type": "done",  "run_id": "..."}
   `symbolic_filter`, `hypopg_validate`) that record which slice of the report the prose came from.
   The UI renders them as tool-call chips above the message.
 - The socket explains; it never mutates state and never calls the model.
+
+### Streaming illusion (Patch 1)
+
+The prose is real, the pace is staged. Two knobs, both configurable and both zeroed in tests:
+
+| Setting | Default | Effect |
+|---|---:|---|
+| `COPILOT_STREAM_DELAY_MS` | 20 | per **character**; a 3-character chunk costs 60 ms (~50 chars/s) |
+| `COPILOT_THINKING_DELAY_MS` | 500 | pause after each `thinking` frame, before its `tool` frame |
+
+- `explainer.chunk()` flattens the sentences into fixed 3-character chunks; joining them reproduces
+  the text exactly, so the typewriter never eats a space at a boundary.
+- Each `tool` frame is preceded by a `thinking` frame and a 500 ms pause, so the trace reads as an
+  agent deciding what to inspect rather than a script firing three chips at once.
+- The client clears its indicator on any frame that is not `thinking`, so the state cannot get stuck.
+- `ToolCallChip` renders `[tool] → result` collapsed and reveals `args` / full `result` on click.
+- A caret pulses at the end of the message while `streaming` is true.
 
 ## 5. Run archive
 
@@ -128,7 +148,7 @@ server → {"type": "done",  "run_id": "..."}
 | `src/lib/plan-adapter.ts` | DAG → React Flow layout, depth from edges, hero metrics |
 | `src/store/useSessionStore.ts` | health/engine probe, demo connection, schema fetch |
 | `src/store/useAnalysisStore.ts` | analyze → poll → results state machine |
-| `src/store/useCopilotStore.ts` | WebSocket lifecycle and token accumulation |
+| `src/store/useCopilotStore.ts` | WebSocket lifecycle, token accumulation, `thinking` state, tool list |
 | `src/components/**` | live DAG, hero metrics, recommendation card, status bar, schema explorer |
 
 Behaviour details:
@@ -159,16 +179,17 @@ Behaviour details:
 
 | Command | Result |
 |---|---|
-| `apps/api`: `python -m pytest` | **59 passed** |
-| `packages/ml-engine`: `python -m pytest` | **71 passed** |
+| `apps/api`: `python -m pytest` | **61 passed** |
+| `packages/ml-engine`: `python -m pytest` | **79 passed** |
 | `apps/web`: `npm run typecheck` | Clean (strict, `noUncheckedIndexedAccess`) |
-| `apps/web`: `npm run build` | Compiled successfully; `/` at 148 kB |
-| Engine smoke (no DB) | 126,210 params, layers 3, heads 4; 3 symbolic candidates; 1 recommendation `idx_orders_status_customer_id`; 1.31× predicted; optimized DAG + edges + trace correct; near-uniform attention flagged |
+| `apps/web`: `npm run build` | Compiled successfully; `/` at 149 kB |
+| Engine smoke (no DB) | runtime `onnx`, 126,210 params, layers 3, heads 4; 3 symbolic candidates; 1 recommendation `idx_orders_status_customer_id`; 1.31× predicted; optimized DAG + edges + trace correct; near-uniform attention flagged |
 
 New API tests: `tests/test_ml_bridge.py` (graph round-trip, edge flip, attention fallback, id
 namespacing, metric scaling), `tests/test_engine.py` (disabled / missing source / missing
 checkpoint / corrupt checkpoint / real checkpoint), `tests/test_engine_api.py` (public status route,
-copilot streaming, follow-up routing, 4401, 4404).
+reported runtime, copilot streaming, thinking-before-tool ordering, 3-character chunks, follow-up
+routing, 4401, 4404).
 
 Not executed on this machine: the Docker image build and a live hypopg round-trip (Docker Desktop is
 unavailable here). The compose file, Dockerfile, and shadow validation path are unchanged in

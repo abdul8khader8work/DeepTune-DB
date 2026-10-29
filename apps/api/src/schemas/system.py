@@ -31,6 +31,7 @@ class EngineStatusResponse(StrictModel):
     backend: str
     label: str
     device: str
+    runtime: str = "torch"
     checkpoint: str | None = None
     model_version: str | None = None
     parameters: int | None = None

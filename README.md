@@ -72,8 +72,12 @@ See `docs/phase-2-backend-api.md` for the endpoint table and reviewer checklist.
   5% tie-break on write amplification. Only `CREATE INDEX CONCURRENTLY` text is emitted.
 - **Training:** Huber loss, AdamW, cosine warm restarts, edge dropout, and the 1–20 / 21–50 / 51+
   curriculum. Validation uses MAE, RMSE, Spearman ρ, and median Q-error — never accuracy.
-- **Measured result:** held-out synthetic tier 3 plans reach **ρ = 0.93** (MAE 168 ms); every tier
-  clears the ρ > 0.85 target. Weights stay git-ignored.
+- **Measured result:** held-out synthetic plans reach **ρ = 0.96** on the mixed test split and
+  **ρ = 0.956** on tier 3 (MAE 90 ms); every tier clears the ρ > 0.85 target. Weights stay git-ignored.
+- **ONNX inference:** `make ml-export` writes `weights/demo-final.onnx` (opset 17, 538 KB) after
+  proving parity against the PyTorch forward; the API then scores plans through onnxruntime in
+  **0.38 ms** median per plan instead of 3.8 ms. The export is a hand-written, shape-polymorphic
+  mirror of the GATv2 forward because a naive trace silently bakes the graph size in.
 
 See `docs/phase-3-ml-engine.md` for the graph contract, pruning table, and full metrics.
 
@@ -85,15 +89,18 @@ See `docs/phase-3-ml-engine.md` for the graph contract, pruning table, and full 
   returned DAG. The Phase 1 mock plan survives only as an offline fallback.
 - **Engine loaded once:** `PlanOptimizer` is constructed in the FastAPI `lifespan` on a worker
   thread, never inside a route. `GET /engine/status` reports the loaded checkpoint, parameter count,
-  device, and layer/head configuration.
+  device, layer/head configuration, and the active inference `runtime` (`onnx`, `torch`, or
+  `heuristic`), which the status bar shows as a badge.
 - **Real explainability:** GATv2 attention becomes the node heatmap, the beam trace becomes the
   symbolic log, and pruned candidates are listed with their rejection reason.
 - **Honest degradation:** a missing checkpoint, a broken file, or `ML_ENABLED=false` drops the run to
   the Phase 2 heuristic recommender and says so in the UI — startup never fails because of the model.
 - **Apply / revert:** the recommendation card injects the hypothetical index into the shadow DB via
   hypopg, then reverts it. No DDL ever touches the target database.
-- **Streaming Copilot:** `/ws/copilot/{run_id}` streams a grounded, deterministic explanation
-  word-by-word over a WebSocket. No external LLM, no query text leaving the machine.
+- **Streaming Copilot:** `/ws/copilot/{run_id}` streams a grounded, deterministic explanation over a
+  WebSocket in 3-character chunks at ~20 ms per character, preceded by a `thinking` pause and one
+  collapsible `[tool] → result` chip per tool frame. No external LLM, no query text leaving the
+  machine.
 - **Durable runs:** when `METADATA_DB_DSN` is set, `analysis_runs` stores status, engine, error, and
   the full result JSON; without it, runs stay in memory exactly as in Phase 2.
 - **Container-ready:** the API image is built from the repository root, installs CPU-only torch, and
@@ -188,8 +195,8 @@ Requires Node 18.17+.
 cd apps/api
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-dev.txt
-.venv/Scripts/python -m pip install -r requirements-ml.txt   # torch + PyG (CPU)
-.venv/Scripts/python -m pytest                                # 59 tests
+.venv/Scripts/python -m pip install -r requirements-ml.txt   # torch + PyG + onnxruntime (CPU)
+.venv/Scripts/python -m pytest                                # 61 tests
 .venv/Scripts/python -m uvicorn src.main:app --reload --port 8000
 ```
 
@@ -203,19 +210,21 @@ containers. On POSIX use `.venv/bin/python` instead of `.venv/Scripts/python`.
 cd packages/ml-engine
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-dev.txt
-.venv/Scripts/python -m pytest                         # 71 tests
+.venv/Scripts/python -m pytest                         # 79 tests
 PYTHONPATH=src .venv/Scripts/python -m training.train \
   --epochs 120 --train-per-tier 1500 1700 1800 \
   --val-size 150 --test-size 200 --out weights/demo-final.pt
 PYTHONPATH=src .venv/Scripts/python -m training.evaluate \
   --checkpoint weights/demo-final.pt --tier 3
+PYTHONPATH=src .venv/Scripts/python -m training.export_onnx \
+  --checkpoint weights/demo-final.pt --out weights/demo-final.onnx
 ```
 
 The engine is CPU-only and does not need Docker. Training uses a deterministic synthetic EXPLAIN
 workload: 5,000 TPC-H-like QEP graphs across three curriculum tiers. Phase 4 replaces it with real
 `EXPLAIN (ANALYZE)` data and hypopg-modified plans. The root `Makefile` exposes the same flow as
 `make ml-install`, `make ml-test`, `make ml-train` (20-epoch smoke recipe), `make ml-train-full`
-(120-epoch shipped recipe), and `make ml-eval`.
+(120-epoch shipped recipe), `make ml-eval`, and `make ml-export` (parity-gated ONNX export).
 
 ---
 

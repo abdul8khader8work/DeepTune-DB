@@ -14,6 +14,7 @@ export function StatusBar() {
 
   const backend = engine?.backend ?? "gnn";
   const version = engine?.model_version ?? "v1.0";
+  const runtime = engine?.runtime ?? "heuristic";
   const online = engine?.available ?? false;
   const hypopg = health?.shadow_db_configured ?? true;
 
@@ -37,6 +38,12 @@ export function StatusBar() {
           <span className="font-mono text-content-secondary">{version}</span>
           <span className={online ? "text-ok" : "text-warn"}>
             ({online ? "Active" : "Heuristic"})
+          </span>
+          <span
+            className="rounded-sm border border-info/30 px-1 font-mono text-[9px] uppercase tracking-[0.06em] text-info"
+            title="Inference runtime reported by GET /api/v1/engine/status"
+          >
+            {runtime}
           </span>
         </span>
         <span className="hidden h-3 w-px bg-surface-3 sm:block" aria-hidden />

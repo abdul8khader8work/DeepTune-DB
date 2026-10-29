@@ -8,6 +8,8 @@ import type { ChatMessage, ToolCall } from "@/types/graph";
 type CopilotState = {
   messages: ChatMessage[];
   streaming: boolean;
+  /** True between a `thinking` frame and the next `token`/`tool` frame. */
+  thinking: boolean;
   runId: string | null;
   attach: (runId: string | null) => void;
   send: (text: string) => void;
@@ -28,6 +30,7 @@ function appendChunk(chunk: string): void {
   if (!streamedMessageId) return;
   const target = streamedMessageId;
   useCopilotStore.setState((state) => ({
+    thinking: false,
     messages: state.messages.map((message) =>
       message.id === target ? { ...message, text: message.text + chunk } : message,
     ),
@@ -38,8 +41,11 @@ function attachTool(tool: ToolCall): void {
   if (!streamedMessageId) return;
   const target = streamedMessageId;
   useCopilotStore.setState((state) => ({
+    thinking: false,
     messages: state.messages.map((message) =>
-      message.id === target ? { ...message, tool } : message,
+      message.id === target
+        ? { ...message, tools: [...(message.tools ?? []), tool] }
+        : message,
     ),
   }));
 }
@@ -50,8 +56,13 @@ function handleFrame(frame: CopilotFrame): void {
     streamedMessageId = id;
     useCopilotStore.setState((state) => ({
       streaming: true,
+      thinking: true,
       messages: [...state.messages, { id, role: "assistant", text: "" }],
     }));
+    return;
+  }
+  if (frame.type === "thinking") {
+    useCopilotStore.setState({ thinking: true });
     return;
   }
   if (frame.type === "token") {
@@ -69,7 +80,7 @@ function handleFrame(frame: CopilotFrame): void {
   }
   if (frame.type === "done") {
     streamedMessageId = null;
-    useCopilotStore.setState({ streaming: false });
+    useCopilotStore.setState({ streaming: false, thinking: false });
   }
 }
 
@@ -87,6 +98,7 @@ function closeSocket(): void {
 export const useCopilotStore = create<CopilotState>((set, get) => ({
   messages: [],
   streaming: false,
+  thinking: false,
   runId: null,
 
   attach: (runId) => {
@@ -94,11 +106,11 @@ export const useCopilotStore = create<CopilotState>((set, get) => ({
     closeSocket();
 
     if (!runId) {
-      set({ runId: null, streaming: false });
+      set({ runId: null, streaming: false, thinking: false });
       return;
     }
 
-    set({ runId, messages: [], streaming: true });
+    set({ runId, messages: [], streaming: true, thinking: true });
     const ws = new WebSocket(copilotSocketUrl(runId));
     socket = ws;
 
@@ -109,13 +121,14 @@ export const useCopilotStore = create<CopilotState>((set, get) => ({
         // Ignore malformed frames rather than tearing down the socket.
       }
     };
-    ws.onerror = () => set({ streaming: false });
+    ws.onerror = () => set({ streaming: false, thinking: false });
     ws.onclose = (event: CloseEvent) => {
       socket = null;
       const messages = get().messages;
       if (event.code === 4401) {
         set({
           streaming: false,
+          thinking: false,
           messages: [
             ...messages,
             {
@@ -127,7 +140,7 @@ export const useCopilotStore = create<CopilotState>((set, get) => ({
         });
         return;
       }
-      set({ streaming: false });
+      set({ streaming: false, thinking: false });
     };
   },
 
@@ -156,6 +169,7 @@ export const useCopilotStore = create<CopilotState>((set, get) => ({
     streamedMessageId = answerId;
     set((state) => ({
       streaming: true,
+      thinking: true,
       messages: [
         ...state.messages,
         userMessage,
@@ -167,6 +181,6 @@ export const useCopilotStore = create<CopilotState>((set, get) => ({
 
   clear: () => {
     streamedMessageId = null;
-    set({ messages: [] });
+    set({ messages: [], thinking: false });
   },
 }));
