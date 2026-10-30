@@ -161,41 +161,10 @@ export interface HeroMetrics {
   edgeCount: number;
 }
 
-/**
- * Interpolate two plans for the time-travel slider.
- *
- * `t = 0` is the original plan, `t = 1` the optimized one. Node positions stay
- * anchored to the original layout so the graph does not jump while scrubbing;
- * only the metrics and the operator identity morph.
- */
-export function blendPlans(from: PlanView, to: PlanView, t: number): PlanView {
-  if (t <= 0) return from;
-  if (t >= 1) return to;
-
-  const target = new Map(to.nodes.map((node) => [node.id, node]));
-  const lerp = (start: number, end: number): number => start + (end - start) * t;
-  const morphed = t >= 0.5;
-
-  const nodes = from.nodes.map((node) => {
-    const counterpart = target.get(node.id);
-    if (!counterpart) return node;
-    return {
-      ...node,
-      data: {
-        ...node.data,
-        cost: lerp(node.data.cost, counterpart.data.cost),
-        rows: lerp(node.data.rows, counterpart.data.rows),
-        selectivity: lerp(node.data.selectivity, counterpart.data.selectivity),
-        attention: lerp(node.data.attention, counterpart.data.attention),
-        op: morphed ? counterpart.data.op : node.data.op,
-        kind: morphed ? counterpart.data.kind : node.data.kind,
-        bottleneck: morphed ? counterpart.data.bottleneck : node.data.bottleneck,
-      },
-    };
-  });
-
-  return { nodes, edges: from.edges, maxCost: from.maxCost, maxRows: from.maxRows };
-}
+// Patch 3 replaced `blendPlans` with a Framer Motion value: `QOGraph` keeps the
+// node array stable and `QONode` interpolates towards `data.counterpart`
+// (see lib/morph.ts). Rebuilding the plan on every slider tick re-rendered
+// React Flow 20 times a second and capped the scrub at 23 fps.
 
 export function heroMetrics(result: AnalysisResult): HeroMetrics {
   const before = result.original_metrics.time_ms ?? 0;

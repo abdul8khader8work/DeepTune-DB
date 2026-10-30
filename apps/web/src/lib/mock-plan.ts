@@ -115,6 +115,123 @@ export const planNodes: QONodeModel[] = [
   },
 ];
 
+/**
+ * Phase 1 demo data: the same DAG after `idx_orders_customer_date` exists.
+ *
+ * The offline sample has no analysis behind it, so the time-travel slider would
+ * have nothing to morph towards. These values are the shape the optimizer
+ * reports for `initialQuery` once the recommended index is in place, matching
+ * `planMetrics` (423 ms -> 53 ms). A live run always uses the API payload
+ * instead; this is never mixed into real results.
+ */
+export const optimizedPlanNodes: QONodeModel[] = [
+  {
+    id: "limit",
+    type: "qo",
+    position: { x: 320, y: 0 },
+    data: {
+      op: "Limit",
+      relation: "orders",
+      cost: 1830,
+      rows: 20,
+      selectivity: 0.0002,
+      attention: 0.12,
+      kind: "aggregate",
+      bottleneck: false,
+    },
+  },
+  {
+    id: "aggregate",
+    type: "qo",
+    position: { x: 320, y: 118 },
+    data: {
+      op: "Aggregate",
+      relation: "orders",
+      cost: 1780,
+      rows: 42,
+      selectivity: 0.0004,
+      attention: 0.21,
+      kind: "aggregate",
+      bottleneck: false,
+    },
+  },
+  {
+    id: "join",
+    type: "qo",
+    position: { x: 320, y: 246 },
+    data: {
+      op: "Nested Loop",
+      relation: "orders",
+      cost: 1490,
+      rows: 4210,
+      selectivity: 0.12,
+      attention: 0.34,
+      kind: "join",
+      bottleneck: false,
+    },
+  },
+  {
+    id: "seq",
+    type: "qo",
+    position: { x: 64, y: 386 },
+    data: {
+      op: "Index Scan",
+      relation: "orders",
+      cost: 1470,
+      rows: 4210,
+      selectivity: 0.042,
+      attention: 0.46,
+      kind: "index",
+      bottleneck: false,
+    },
+  },
+  {
+    id: "hash",
+    type: "qo",
+    position: { x: 512, y: 386 },
+    data: {
+      op: "Memoize",
+      relation: "customers",
+      cost: 96,
+      rows: 12000,
+      selectivity: 0.35,
+      attention: 0.22,
+      kind: "hash",
+      bottleneck: false,
+    },
+  },
+  {
+    id: "idx",
+    type: "qo",
+    position: { x: 512, y: 514 },
+    data: {
+      op: "Index Only Scan",
+      relation: "customers",
+      cost: 21,
+      rows: 12000,
+      selectivity: 0.03,
+      attention: 0.08,
+      kind: "index",
+      bottleneck: false,
+    },
+  },
+  {
+    id: "bitmap",
+    type: "qo",
+    position: { x: 512, y: 642 },
+    data: {
+      op: "Index Scan",
+      relation: "customers",
+      cost: 9,
+      rows: 12000,
+      selectivity: 0.03,
+      attention: 0.05,
+      kind: "index",
+      bottleneck: false,
+    },
+  },
+];
+
 export const planEdges: QOEdgeModel[] = [
   {
     id: "e-seq-join",

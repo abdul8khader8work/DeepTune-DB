@@ -11,10 +11,12 @@ import {
 import "@xyflow/react/dist/style.css";
 import { QONode } from "@/components/center/QONode";
 import { QOEdge } from "@/components/center/QOEdge";
-import { planEdges, planNodes } from "@/lib/mock-plan";
-import { blendPlans, toFlow, type PlanView } from "@/lib/plan-adapter";
+import { optimizedPlanNodes, planEdges, planNodes } from "@/lib/mock-plan";
+import { morphProgress } from "@/lib/morph";
+import { toFlow, type PlanView } from "@/lib/plan-adapter";
 import { useAnalysisStore } from "@/store/useAnalysisStore";
 import { useGraphStore } from "@/store/useGraphStore";
+import type { QONodeMetrics } from "@/types/graph";
 
 const nodeTypes = { qo: QONode };
 const edgeTypes = { qo: QOEdge };
@@ -26,10 +28,21 @@ const samplePlan: PlanView = {
   maxRows: 0,
 };
 
+//: Offline fallback: the same demo DAG with the recommended index applied, so
+//: the time-travel slider still has a counterpart to morph towards before the
+//: first analysis. See `optimizedPlanNodes` in lib/mock-plan.ts.
+const sampleOptimized: PlanView = {
+  nodes: optimizedPlanNodes,
+  edges: planEdges,
+  maxCost: 0,
+  maxRows: 0,
+};
+
+const EMPTY: ReadonlyMap<string, QONodeMetrics> = new Map();
+
 export function QOGraph() {
   const result = useAnalysisStore((state) => state.result);
   const view = useGraphStore((state) => state.view);
-  const sliderT = useGraphStore((state) => state.sliderT);
   const locked = useGraphStore((state) => state.locked);
   const selectedNodeId = useGraphStore((state) => state.selectedNodeId);
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
@@ -43,16 +56,30 @@ export function QOGraph() {
   }, [result]);
 
   const optimized = useMemo<PlanView>(() => {
-    if (!result) return samplePlan;
+    if (!result) return sampleOptimized;
     return toFlow(result.optimized_dag, result.edges);
   }, [result]);
 
-  const plan = useMemo<PlanView>(() => {
-    if (!result) return samplePlan;
-    return view === "optimized"
-      ? optimized
-      : blendPlans(original, optimized, sliderT);
-  }, [original, optimized, result, sliderT, view]);
+  // Patch 3: the graph renders ONE plan and never rebuilds while the slider
+  // moves. Each node carries the optimized node with the same id, and the card
+  // interpolates towards it on a motion value (see lib/morph.ts).
+  const plan = view === "optimized" ? optimized : original;
+
+  const counterparts = useMemo<ReadonlyMap<string, QONodeMetrics>>(() => {
+    if (view === "optimized") return EMPTY;
+    return new Map(optimized.nodes.map((node) => [node.id, node.data]));
+  }, [optimized.nodes, view]);
+
+  // Slider -> motion value. Subscribed imperatively so scrubbing re-renders
+  // neither this component nor React Flow; only the node cards react.
+  useEffect(() => {
+    const sync = () => {
+      const state = useGraphStore.getState();
+      morphProgress.set(state.view === "optimized" ? 1 : state.sliderT);
+    };
+    sync();
+    return useGraphStore.subscribe(sync);
+  }, []);
 
   const nodeCount = plan.nodes.length;
 
@@ -80,9 +107,10 @@ export function QOGraph() {
     () =>
       plan.nodes.map((node) => ({
         ...node,
+        data: { ...node.data, counterpart: counterparts.get(node.id) },
         selected: node.id === selectedNodeId,
       })),
-    [plan.nodes, selectedNodeId],
+    [counterparts, plan.nodes, selectedNodeId],
   );
 
   const onNodeClick = useCallback(

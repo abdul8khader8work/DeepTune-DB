@@ -146,6 +146,7 @@ The prose is real, the pace is staged. Two knobs, both configurable and both zer
 | `src/types/api.ts` | strict mirror of the Pydantic contracts (no `any`) |
 | `src/lib/api.ts` | typed client, uniform `ApiError`, bearer token from env or `localStorage` |
 | `src/lib/plan-adapter.ts` | DAG → React Flow layout, depth from edges, hero metrics |
+| `src/lib/morph.ts` | the time-travel motion value the node cards subscribe to (Patch 3) |
 | `src/store/useSessionStore.ts` | health/engine probe, demo connection, schema fetch |
 | `src/store/useAnalysisStore.ts` | analyze → poll → results state machine |
 | `src/store/useCopilotStore.ts` | WebSocket lifecycle, token accumulation, `thinking` state, tool list |
@@ -162,6 +163,32 @@ Behaviour details:
   when the API is down.
 - If no database is connected, the schema explorer falls back to the sample catalog and the topbar
   pill reads "No database attached" in the warning tone.
+
+### 6.1 The DAG morph (Patch 3)
+
+The time-travel slider used to rebuild the whole plan on every tick: `blendPlans()` produced a new
+node array, `QOGraph` re-rendered, and React Flow re-measured every node. Measured on the sample
+plan, a 1.5 s scrub ran at **23.1 fps** (`layout`), 21.8 fps (`layout="position"`) and 25.4 fps
+with no layout animation at all — the cost was the re-render, not the animation.
+
+The morph is now a Framer Motion value:
+
+| Piece | File | Role |
+|---|---|---|
+| `morphProgress` | `src/lib/morph.ts` | module-level `motionValue(0)`; the single source of morph position |
+| `QOGraph` | `src/components/center/QOGraph.tsx` | renders **one** plan, attaches `data.counterpart` (the optimized node with the same id), and syncs the store → motion value through `useGraphStore.subscribe` — no React state |
+| `QONode` | `src/components/center/QONode.tsx` | `layout` on the inner card only, tone washes as `opacity` motion values, `AnimatePresence` label swap, `will-change: transform` |
+| `MorphValue` | `src/components/center/QOMetric.tsx` | subscribes to `morphProgress` and writes the interpolated number to `textContent` |
+| `blendPlans` | removed | dead once the nodes stay stable |
+
+- React renders **twice** per scrub, at the 50% identity flip, when the operator label, icon,
+  border and bottleneck tone actually change. Everything numeric is a DOM write.
+- `layout` stays on the inner `motion.div`; the outer React Flow wrapper keeps owning absolute
+  positioning, so Framer never fights the canvas.
+- Offline, `optimizedPlanNodes` in `src/lib/mock-plan.ts` supplies the counterpart so the slider
+  still demonstrates the morph before the first analysis. A live run always uses the API payload.
+- Result: **60.0 fps** (median 16.7 ms, p95 17.1 ms, max 17.3 ms over 91 frames) in the production
+  build, with zero console errors.
 
 ## 7. Infrastructure
 

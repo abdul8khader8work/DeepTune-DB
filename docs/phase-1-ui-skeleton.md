@@ -10,7 +10,8 @@
 ### 1. Project bootstrapped
 
 Next.js 14 (App Router), TypeScript strict, Tailwind CSS, shadcn-style primitives, React Flow,
-Monaco, Framer Motion, cmdk, sonner, Zustand, TanStack Query.
+Monaco, Framer Motion, cmdk, sonner, Zustand. (TanStack Query was removed in Patch 2 — it had no
+imports.)
 
 ### 2. Global chrome
 
@@ -40,6 +41,8 @@ Panes are resizable via `react-resizable-panels`; each pane scrolls internally, 
 - 7-node PostgreSQL-style plan with realistic costs, rows, selectivity, and attention scores.
 - Animated high-cardinality edges (>10k rows).
 - Time-travel slider drives the node colour morph and metric interpolation locally.
+  (Patch 3 moved that interpolation onto a Framer Motion value — see
+  `docs/phase-4-integration.md` §6.1.)
 
 ## Reviewer checklist
 

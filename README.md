@@ -31,7 +31,9 @@ winner, and the copilot streams an explanation of the result.
   and `Run & Optimize`, plus a searchable schema explorer.
 - **Center — Visual Brain:** interactive React Flow DAG with custom `QONode` cards (cost, rows,
   selectivity, GNN attention), animated high-cardinality edges, zoom/fit/lock toolbar, plan toggle,
-  heatmap switch, and a working time-travel slider with play/pause and speed control.
+  heatmap switch, and a time-travel slider that morphs the DAG with Framer Motion — the card
+  interpolates its cost/rows/selectivity/attention and swaps `Seq Scan` → `Index Scan` at the
+  midpoint, at 60 fps (see `docs/phase-4-integration.md` §6.1).
 - **Right — AI Insights:** hero latency metrics, recommendation card with confidence badge and
   `CREATE INDEX` script, and a Copilot chat shell with tool-call chips.
 - **Global chrome:** connection pill, breadcrumbs, `⌘K` command palette, dark-only token system.
