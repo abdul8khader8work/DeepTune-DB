@@ -24,6 +24,23 @@ winner, and the copilot streams an explanation of the result.
 
 ---
 
+## Documentation
+
+Everything lives under `docs/`:
+
+| Path | Contents |
+|---|---|
+| `docs/README.md` | index of the documentation set |
+| `docs/phase-1-ui-skeleton.md` | UI skeleton, design tokens, layout, dummy DAG |
+| `docs/phase-2-backend-api.md` | FastAPI contracts, SQL guard, EXPLAIN sandbox, hypopg |
+| `docs/phase-3-ml-engine.md` | parser, GATv2, pruning, beam search, metrics |
+| `docs/phase-4-integration.md` | web → API → engine wiring, copilot, DAG morph |
+| `docs/blueprints/` | the source-of-truth blueprint documents (`.docx`/`.pdf`/`.xlsx`) |
+
+`AGENTS.md` (the project constitution) stays at the repository root because tooling reads it there.
+
+---
+
 ## What is in Phase 1
 
 - **3-pane command center** at 25% / 50% / 25%, resizable, with a 48px topbar and 32px statusbar.
@@ -130,7 +147,7 @@ DeepTune-DB/
 │       ├── src/db/           # metadata, target, shadow, run archive
 │       ├── src/services/     # sqlglot guard, EXPLAIN, DAG, engine bridge, pipeline
 │       ├── src/schemas/      # strict Pydantic contracts
-│       └── tests/            # 59 unit/contract tests
+│       └── tests/            # 68 unit/contract tests
 ├── packages/
 │   └── ml-engine/            # PyTorch/PyG engine (Phase 3)
 │       ├── src/parsers/      # EXPLAIN JSON -> PyG graph
@@ -138,9 +155,9 @@ DeepTune-DB/
 │       ├── src/search/       # symbolic pruning + beam search
 │       ├── src/training/     # workload, datasets, metrics, CLIs
 │       ├── src/inference.py  # PlanOptimizer facade for Phase 4
-│       └── tests/            # 70 engine and boundary tests
+│       └── tests/            # 79 engine and boundary tests
 ├── infra/                    # Postgres init, hypopg shadow DB, nginx
-├── docs/                     # Phase records and implementation notes
+├── docs/                     # phase records + docs/blueprints/ (source-of-truth specs)
 ├── docker-compose.yml        # metadata + target + shadow + api + web + nginx
 ├── AGENTS.md                 # Project constitution (boundaries + never-list)
 ├── .env.example              # Environment template (no secrets)

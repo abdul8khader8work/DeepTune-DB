@@ -2,8 +2,9 @@
 
 Project: A Lightweight, Neuro-Symbolic Query Optimizer and Index Recommender for Local Databases.
 
-This file is the machine-readable summary of `GOD_FILE.docx`, `MASTER_EXECUTION_PLAN.md.docx`
-and `REVIEWER&Enforcer.docx`. Read it before touching any file.
+This file is the machine-readable summary of `docs/blueprints/GOD_FILE.docx`,
+`docs/blueprints/MASTER_EXECUTION_PLAN.md.docx` and `docs/blueprints/REVIEWER&Enforcer.docx`.
+Read it before touching any file.
 
 ## 1. Monorepo boundaries (non-negotiable)
 

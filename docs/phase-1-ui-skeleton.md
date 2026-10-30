@@ -2,8 +2,9 @@
 
 **Status:** Complete
 **Scope:** `apps/web/` only. No backend, no ML engine, no network calls.
-**Source of truth:** `GOD_FILE.docx`, `MASTER_EXECUTION_PLAN.md.docx`, `REVIEWER&Enforcer.docx`,
-`ui_interface.docx`, `buttons_interface.docx`.
+**Source of truth:** `docs/blueprints/GOD_FILE.docx`, `docs/blueprints/MASTER_EXECUTION_PLAN.md.docx`,
+`docs/blueprints/REVIEWER&Enforcer.docx`, `docs/blueprints/ui_interface.docx`,
+`docs/blueprints/buttons_interface.docx`.
 
 ## Deliverables
 

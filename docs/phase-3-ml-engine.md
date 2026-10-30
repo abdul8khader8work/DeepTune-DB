@@ -2,8 +2,9 @@
 
 **Status:** Complete (unit-tested; trained and evaluated on a synthetic EXPLAIN workload)
 **Scope:** `packages/ml-engine/`, plus root `README.md`, `Makefile`, and this record.
-**Source of truth:** `GOD_FILE.docx`, `MASTER_EXECUTION_PLAN.md.docx`, `REVIEWER&Enforcer.docx`,
-`ML_Pipeline_and_Model_Training.docx`, `Evaluation_and_Benchmarking_Strategy.docx`.
+**Source of truth:** `docs/blueprints/GOD_FILE.docx`, `docs/blueprints/MASTER_EXECUTION_PLAN.md.docx`,
+`docs/blueprints/REVIEWER&Enforcer.docx`, `docs/blueprints/ML_Pipeline_and_Model_Training.docx`,
+`docs/blueprints/Evaluation_and_Benchmarking_Strategy.docx`.
 
 The engine is a pure PyTorch/PyG library. It never imports FastAPI, uvicorn, SQLAlchemy, or a
 database driver, and it contains no HTTP or persistence code. Phase 4 loads `PlanOptimizer` once

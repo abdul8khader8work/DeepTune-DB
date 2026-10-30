@@ -3,7 +3,8 @@
 **Status:** Complete (web → API → engine wired; verified locally without Docker)
 **Scope:** `apps/api/` (integration only), `apps/web/` (live data), `infra/` (image + compose),
 plus root `README.md`, `Makefile`, `.env.example`, and this record.
-**Source of truth:** `GOD_FILE.docx`, `MASTER_EXECUTION_PLAN.md.docx`, `REVIEWER&Enforcer.docx`.
+**Source of truth:** `docs/blueprints/GOD_FILE.docx`, `docs/blueprints/MASTER_EXECUTION_PLAN.md.docx`,
+`docs/blueprints/REVIEWER&Enforcer.docx`.
 
 Phase 4 does not add new model code or new UI concepts. It replaces every Phase 1 mock with a real
 data path and makes the three layers run as one system:

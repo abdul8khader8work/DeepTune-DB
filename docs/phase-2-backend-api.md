@@ -2,9 +2,10 @@
 
 **Status:** Complete (unit-tested; container stack defined but not executed on this machine)
 **Scope:** `apps/api/`, `infra/`, root `docker-compose.yml`, root `.env.example`, `Makefile`.
-**Source of truth:** `GOD_FILE.docx`, `MASTER_EXECUTION_PLAN.md.docx`, `REVIEWER&Enforcer.docx`,
-`API_Specification_and_Endpoints.docx`, `Security_and_Deployment_Strategy.docx`,
-`Database_Schema_and_Metadata_Model.docx`.
+**Source of truth:** `docs/blueprints/GOD_FILE.docx`, `docs/blueprints/MASTER_EXECUTION_PLAN.md.docx`,
+`docs/blueprints/REVIEWER&Enforcer.docx`, `docs/blueprints/API_Specification_and_Endpoints.docx`,
+`docs/blueprints/Security_and_Deployment_Strategy.docx`,
+`docs/blueprints/Database_Schema_and_Metadata_Model.docx`.
 
 ## Deliverables
 
