@@ -1,0 +1,23 @@
+# Build context for the API image (`context: .` in docker-compose.yml).
+# The frontend builds from its own context (apps/web), so it never needs to be
+# in this one.
+
+.git
+.gitignore
+.env
+.env.*
+*.docx
+*.pdf
+*.xlsx
+docs
+apps/web
+**/node_modules
+**/.next
+**/.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+packages/ml-engine/weights

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import asyncpg
 
 from src.core.config import Settings
-from src.services.explain import ExplainResult, explain_analyze
+from src.services.explain import ExplainResult, explain_analyze, explain_steady_state
 
 
 class ShadowUnavailable(RuntimeError):
@@ -72,21 +72,28 @@ async def validate_index(
     sql_query: str,
     create_sql: str,
     timeout_ms: int,
+    runs: int = 1,
 ) -> ValidationResult:
-    """Create a hypothetical index, re-EXPLAIN, and always drop it."""
-    baseline = await explain_analyze(conn, sql_query, timeout_ms)
+    """Create a hypothetical index, re-EXPLAIN, and always drop it.
+
+    ``runs`` applies the median-of-5 rule to both sides of the comparison: with
+    ``runs > 1`` the baseline and the indexed measurement are steady-state
+    medians, so a cache-cold first execution cannot flatter or spoil the
+    reported speedup. ``runs=1`` keeps the original single-shot behaviour.
+    """
+    baseline = await explain_steady_state(conn, sql_query, timeout_ms, runs)
     index_id, index_name = await create_hypothetical_index(conn, create_sql)
     try:
-        after = await explain_analyze(conn, sql_query, timeout_ms)
+        after = await explain_steady_state(conn, sql_query, timeout_ms, runs)
     finally:
         await drop_hypothetical_index(conn, index_id)
     return ValidationResult(
         hypopg_index_id=index_id,
         index_name=index_name,
-        baseline_execution_time_ms=baseline.execution_time_ms,
-        execution_time_ms=after.execution_time_ms,
-        total_cost=after.total_cost,
-        plan=after.plan,
+        baseline_execution_time_ms=baseline.result.execution_time_ms,
+        execution_time_ms=after.result.execution_time_ms,
+        total_cost=after.result.total_cost,
+        plan=after.result.plan,
     )
 
 

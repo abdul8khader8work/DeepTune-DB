@@ -68,22 +68,66 @@ still works; the health endpoint reports which store is active.
 - The data directory is a `tmpfs`, so hypothetical indexes never persist.
 - `infra/postgres/demo.sql` seeds an identical schema (20k customers, 5k products, 120k orders)
   in both the target and shadow DBs and runs `VACUUM ANALYZE` once at init.
-- `TARGET_ALLOW_MAINTENANCE` stays `false`: the read-only target role cannot `VACUUM`, and the API
-  logs `Skipping VACUUM ANALYZE…` instead of attempting it.
+- `TARGET_ALLOW_MAINTENANCE` defaults to `true` (Patch 2): the pipeline attempts `VACUUM ANALYZE`
+  before measuring the baseline, because stale planner statistics are the most common reason a
+  correct query gets a bad plan. The read-only target role cannot `VACUUM` (it needs table
+  ownership), so a refusal or timeout is logged as
+  `VACUUM ANALYZE not applied (…)` and the run continues. Set the flag to `false` to skip the
+  attempt entirely.
 
 ### 6. Analysis pipeline
 
 1. Validate the SQL with sqlglot (single read-only `SELECT`).
 2. Load the encrypted DSN, connect with the stored SSL mode.
-3. Capture baseline `EXPLAIN (ANALYZE, FORMAT JSON)`; introspect schema in one query.
+3. Attempt `VACUUM ANALYZE` (best effort; see above), then capture the baseline
+   `EXPLAIN (ANALYZE, FORMAT JSON)` and introspect the schema in one query.
 4. Convert the plan into API DAG nodes/edges; attention scores are heuristic in Phase 2.
 5. Derive candidate indexes from equality/join/range/ordering predicates.
 6. Validate each candidate with `hypopg` in the shadow DB, recording the speedup and keeping the
    fastest optimised plan.
 7. Return `CREATE INDEX CONCURRENTLY` scripts, storage overhead, write impact, and confidence.
 
+#### Steady-state measurement (Patch 2)
+
+A single `EXPLAIN (ANALYZE)` is biased by Postgres caching: the first execution pays for cold
+shared buffers and an immediate repeat can beat the steady state. `services/explain.py` now
+exposes `explain_steady_state()`, the "median of 5" rule:
+
+```text
+run EXPLAIN (ANALYZE) N times (default 5, EXPLAIN_MEASUREMENT_RUNS)
+sort by Execution Time
+drop the fastest and the slowest sample
+return the median of the remaining N-2 runs (the whole result: plan, cost, rows)
+```
+
+- The target baseline uses it, so `original_metrics.time_ms` is a median rather than a
+  cache-cold first run.
+- `validate_index()` applies the same N runs to both the baseline and the indexed measurement, so
+  `validated_speedup_factor` compares like with like instead of a median against one sample.
+  Cost is `2 × N` EXPLAINs per candidate; set `EXPLAIN_MEASUREMENT_RUNS=1` to restore the old
+  single-shot behaviour.
+- Every sample still runs in its own transaction with `SET LOCAL statement_timeout` and rollback;
+  the rule changes how many times the sandbox runs, never how it runs.
+
+
 If the shadow DB is unavailable, the baseline DAG and metrics are returned unchanged with
 `validated_speedup_factor = null` — a validation failure never erases results.
+
+### 7. Patch 2: DevOps cleanup
+
+- `@tanstack/react-query` is gone from `apps/web/package.json` and `package-lock.json` (it had
+  zero imports; client state is `zustand`).
+- `docker-compose.yml` gained a `web` service: `apps/web/Dockerfile` builds the Next.js app in a
+  multi-stage `node:20-alpine` image, `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_WS_URL` are build args
+  (Next inlines them), and the container listens on `127.0.0.1:3000`.
+- The `Makefile` is cross-platform: `$(PYTHON)` and `$(BASE_PYTHON)` are selected from `$(OS)`
+  (`.venv/Scripts/python.exe` vs `.venv/bin/python`), and `$(ENV_PATH)` switches
+  `PYTHONPATH=src` between `cmd.exe` (`set PYTHONPATH=src&&`) and POSIX syntax.
+- The `ml-engine` checkpoint/ONNX boundaries no longer use `Any`: `MetricValue`/`MetadataValue`
+  aliases in `models/checkpoint.py`, and `Data`, `GATv2Conv`, `InferenceSession`, `Tensor` in
+  `models/onnx.py`. Raw EXPLAIN JSON keeps `dict[str, Any]` on purpose — Postgres plan payloads
+  are untyped trees validated at the parser boundary, not a model contract.
+- Tests: 68 API (was 61), 79 ml-engine (unchanged).
 
 ## Verification
 
@@ -104,7 +148,7 @@ documented rather than demonstrated. Unit tests stub the database boundary.
 
 ```bash
 cp .env.example .env            # fill in secrets
-docker compose up -d --build    # metadata_db, target_db, shadow_db, api, nginx
+docker compose up -d --build    # metadata_db, target_db, shadow_db, api, web, nginx
 
 # Mint a dev token (inside apps/api or the api container)
 python -m src.cli.token --subject dev
@@ -119,7 +163,8 @@ curl -s -X POST localhost:8000/api/v1/queries/analyze \
 ```
 
 Then poll `/queries/{run_id}/status` and fetch `/queries/{run_id}/results`. The nginx path is
-`http://localhost:8080` with the same routes.
+`http://localhost:8080` with the same routes, and the containerised UI is at
+`http://localhost:3000` (`make dev` runs it with hot reload instead).
 
 ## Reviewer checklist
 

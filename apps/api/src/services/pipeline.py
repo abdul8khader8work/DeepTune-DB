@@ -29,7 +29,7 @@ from src.schemas.analysis import (
 from src.services import ml
 from src.services.dag import Dag, build_dag
 from src.services.engine import EngineBundle
-from src.services.explain import explain_analyze
+from src.services.explain import explain_steady_state
 from src.services.introspection import fetch_schema
 from src.services.recommender import recommend_indexes
 from src.services.runs import RecommendationState, RunRegistry
@@ -68,19 +68,26 @@ def _metrics(cost: float, time_ms: float) -> dict[str, float]:
 
 
 async def _refresh_stats(conn: asyncpg.Connection, settings: Settings) -> None:
-    """Best-effort VACUUM ANALYZE.
+    """Best-effort VACUUM ANALYZE before the baseline is measured.
 
-    The target role is SELECT-only by design, so this only runs when the
-    operator explicitly grants maintenance rights. The shadow DB is analyzed at
-    init time instead.
+    Patch 2 enables the attempt by default: stale planner statistics are the
+    most common reason a correct query gets a bad plan, and the median-of-5
+    baseline would faithfully measure that bad plan. ``VACUUM`` requires table
+    ownership, and the target role is normally SELECT-only, so a refusal is
+    logged and the run continues — the optimizer never depends on rights it is
+    not supposed to have.
     """
     if not settings.target_allow_maintenance:
         logger.info("Skipping VACUUM ANALYZE on the read-only target database")
         return
     try:
         await conn.execute("VACUUM ANALYZE")
-    except asyncpg.PostgresError as exc:
-        logger.warning("VACUUM ANALYZE failed: %s", exc.__class__.__name__)
+        logger.info("VACUUM ANALYZE refreshed target statistics")
+    except (asyncpg.PostgresError, asyncio.TimeoutError, OSError) as exc:
+        logger.info(
+            "VACUUM ANALYZE not applied (%s); the target role needs table ownership",
+            exc.__class__.__name__,
+        )
 
 
 def _heuristic_stage(
@@ -210,12 +217,21 @@ async def _execute(
     try:
         await _refresh_stats(conn, settings)
         await runs.update(
-            run_id, "parsing", 30, "Capturing the baseline EXPLAIN (ANALYZE) plan…"
+            run_id,
+            "parsing",
+            30,
+            "Capturing the baseline EXPLAIN (ANALYZE) plan "
+            f"(median of {settings.explain_measurement_runs} runs)…",
         )
         try:
-            baseline = await explain_analyze(
-                conn, validated.sql, settings.explain_timeout_ms
-            )
+            baseline = (
+                await explain_steady_state(
+                    conn,
+                    validated.sql,
+                    settings.explain_timeout_ms,
+                    settings.explain_measurement_runs,
+                )
+            ).result
             schema = await fetch_schema(conn)
         except asyncpg.PostgresError as exc:
             logger.warning("Target EXPLAIN failed: %s", exc.__class__.__name__)
@@ -311,7 +327,11 @@ async def _validate_candidates(
         for candidate in candidates:
             try:
                 outcome = await validate_index(
-                    conn, sql_query, candidate.sql_statement, settings.explain_timeout_ms
+                    conn,
+                    sql_query,
+                    candidate.sql_statement,
+                    settings.explain_timeout_ms,
+                    settings.explain_measurement_runs,
                 )
             except (asyncpg.PostgresError, ValueError) as exc:
                 logger.warning(

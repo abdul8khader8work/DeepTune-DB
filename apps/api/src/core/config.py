@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,9 +37,14 @@ class Settings(BaseSettings):
 
     target_connect_timeout_s: float = 5.0
     explain_timeout_ms: int = 5000
+    #: Patch 2 steady-state rule: run EXPLAIN this many times and keep the
+    #: median, dropping the fastest and slowest samples (5 -> median of 3).
+    explain_measurement_runs: int = Field(default=5, ge=1, le=15)
     max_sql_length: int = 10000
     analyze_rate_limit: str = "10/minute"
-    target_allow_maintenance: bool = False
+    #: VACUUM ANALYZE is attempted by default; a read-only target role simply
+    #: fails the attempt and the run continues (see services/pipeline.py).
+    target_allow_maintenance: bool = True
     shadow_validate: bool = True
     run_ttl_seconds: int = 1800
 

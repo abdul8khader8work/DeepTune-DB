@@ -83,14 +83,16 @@ services:
       MAX_SQL_LENGTH: ${MAX_SQL_LENGTH:-10000}
       ANALYZE_RATE_LIMIT: ${ANALYZE_RATE_LIMIT:-10/minute}
       RUN_TTL_SECONDS: ${RUN_TTL_SECONDS:-1800}
-      TARGET_ALLOW_MAINTENANCE: "false"
+      TARGET_ALLOW_MAINTENANCE: ${TARGET_ALLOW_MAINTENANCE:-true}
       SHADOW_VALIDATE: "true"
+      # Median-of-5 baseline: five EXPLAIN (ANALYZE) runs, min and max dropped.
+      EXPLAIN_MEASUREMENT_RUNS: ${EXPLAIN_MEASUREMENT_RUNS:-5}
       # Phase 4: neuro-symbolic engine. An empty weights directory is safe —
       # the API falls back to the heuristic recommender and says so.
       ML_ENABLED: ${ML_ENABLED:-true}
       ML_DEVICE: ${ML_DEVICE:-cpu}
       ML_ATTENTION_NODES: ${ML_ATTENTION_NODES:-10}
-      COPILOT_STREAM_DELAY_MS: ${COPILOT_STREAM_DELAY_MS:-18}
+      COPILOT_STREAM_DELAY_MS: ${COPILOT_STREAM_DELAY_MS:-20}
     volumes:
       - ./packages/ml-engine/weights:/app/packages/ml-engine/weights:ro
     ports:
@@ -100,6 +102,22 @@ services:
         condition: service_healthy
       shadow_db:
         condition: service_healthy
+    restart: unless-stopped
+
+  # Next.js 14 frontend (Patch 2). The browser talks to the API on
+  # http://localhost:8000, so the URL is baked in at build time.
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000}
+    environment:
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
     restart: unless-stopped
 
   nginx:

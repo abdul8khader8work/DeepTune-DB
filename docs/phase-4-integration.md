@@ -172,14 +172,17 @@ Behaviour details:
 - Weights are **not** baked into the image (they are git-ignored). Compose mounts
   `./packages/ml-engine/weights` read-only; an empty directory is a supported state that degrades to
   heuristics.
-- `.dockerignore` at the repo root keeps `apps/web`, `docs`, `.venv`, and weights out of the build
-  context.
+- `.dockerignore` at the repo root keeps `apps/web`, `docs`, virtualenvs, node_modules, and weights
+  out of the API build context; `apps/web/.dockerignore` does the same for the frontend image.
+- Patch 2 adds the `web` service (`apps/web/Dockerfile`, multi-stage `node:20-alpine`). Its
+  `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_WS_URL` are build args because Next inlines them at build
+  time; the container serves on `127.0.0.1:3000`.
 
 ## 8. Verification
 
 | Command | Result |
 |---|---|
-| `apps/api`: `python -m pytest` | **61 passed** |
+| `apps/api`: `python -m pytest` | **68 passed** |
 | `packages/ml-engine`: `python -m pytest` | **79 passed** |
 | `apps/web`: `npm run typecheck` | Clean (strict, `noUncheckedIndexedAccess`) |
 | `apps/web`: `npm run build` | Compiled successfully; `/` at 149 kB |

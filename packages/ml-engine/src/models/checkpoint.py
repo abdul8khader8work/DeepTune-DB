@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping, TypeAlias, cast
 
 import torch
 
@@ -29,6 +29,14 @@ class ModelConfig:
     layers: int = MODEL_LAYERS
 
 
+#: A single scalar a training run records next to the weights.
+MetricValue: TypeAlias = str | int | float | bool
+#: ``val_metrics`` is the only nested entry, so the alias stays closed instead
+#: of widening to ``Any`` (Patch 2: no untyped checkpoint payloads).
+MetadataValue: TypeAlias = MetricValue | dict[str, MetricValue]
+Metadata: TypeAlias = dict[str, MetadataValue]
+
+
 def build_model(config: ModelConfig) -> Gatv2CostModel:
     return Gatv2CostModel(
         node_dim=config.node_dim,
@@ -44,7 +52,7 @@ def save_checkpoint(
     path: str | Path,
     model: Gatv2CostModel,
     config: ModelConfig,
-    metadata: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, MetadataValue] | None = None,
 ) -> Path:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +69,7 @@ def save_checkpoint(
 
 def load_checkpoint(
     path: str | Path, map_location: str = "cpu"
-) -> tuple[Gatv2CostModel, ModelConfig, dict[str, Any]]:
+) -> tuple[Gatv2CostModel, ModelConfig, Metadata]:
     checkpoint = torch.load(path, map_location=map_location, weights_only=True)
     if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
         raise ValueError("Checkpoint is missing a state_dict")
@@ -69,5 +77,5 @@ def load_checkpoint(
     model = build_model(config)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.eval()
-    metadata = dict(checkpoint.get("metadata", {}))
+    metadata = cast(Metadata, dict(checkpoint.get("metadata", {})))
     return model, config, metadata

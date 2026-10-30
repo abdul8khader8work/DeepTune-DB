@@ -32,16 +32,21 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Mapping, Protocol, Sequence, TypeAlias
 
 import numpy as np
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch_geometric.data import Data
 
 from config import EDGE_FEATURE_DIM
-from models.checkpoint import ModelConfig
+from models.checkpoint import MetadataValue, ModelConfig
 from models.gatv2 import Gatv2CostModel, parameter_count
+
+if TYPE_CHECKING:  # pragma: no cover - typing-only imports
+    from onnxruntime import InferenceSession
+    from torch_geometric.nn import GATv2Conv
 
 ONNX_OPSET = 17
 ONNX_INPUT_NAMES = ("x", "edge_index", "edge_attr")
@@ -60,16 +65,19 @@ _METADATA_KEYS = (
 
 _EPS = 1e-16
 
+#: GATv2Conv's self-loop feature: ``'mean'``, a constant, or a feature vector.
+FillValue: TypeAlias = str | float | Tensor
+
 
 class GraphLike(Protocol):
     """Minimal view of a ``PlanGraph`` (keeps this module parser-agnostic)."""
 
     @property
-    def data(self) -> Any: ...
+    def data(self) -> Data: ...
 
 
 def _loop_attr(
-    edge_attr: Tensor, dst: Tensor, num_nodes: Tensor, fill_value: Any
+    edge_attr: Tensor, dst: Tensor, num_nodes: Tensor, fill_value: FillValue
 ) -> Tensor:
     """Self-loop features, mirroring ``compute_loop_attr`` in PyG.
 
@@ -91,7 +99,7 @@ def _loop_attr(
 
 
 def _with_self_loops(
-    edge_index: Tensor, edge_attr: Tensor, num_nodes: Tensor, fill_value: Any = "mean"
+    edge_index: Tensor, edge_attr: Tensor, num_nodes: Tensor, fill_value: FillValue = "mean"
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Drop existing self-loops, then append one per node (GATv2Conv semantics)."""
     src, dst = edge_index[0], edge_index[1]
@@ -144,7 +152,7 @@ def _scatter_softmax(scores: Tensor, indicator: Tensor, dst: Tensor) -> Tensor:
 
 
 def _gat_layer(
-    layer: Any, hidden: Tensor, src: Tensor, dst: Tensor, edge_attr: Tensor
+    layer: GATv2Conv, hidden: Tensor, src: Tensor, dst: Tensor, edge_attr: Tensor
 ) -> tuple[Tensor, Tensor]:
     """One ``GATv2Conv`` layer with ``concat=True`` and no residual branch."""
     heads, channels = layer.heads, layer.out_channels
@@ -210,7 +218,10 @@ def _dynamic_axes() -> dict[str, dict[int, str]]:
 
 
 def _attach_metadata(
-    path: Path, config: ModelConfig, metadata: Mapping[str, Any], parameters: int
+    path: Path,
+    config: ModelConfig,
+    metadata: Mapping[str, MetadataValue],
+    parameters: int,
 ) -> None:
     """Copy the checkpoint metadata into the ONNX proto so inference needs no .pt."""
     import onnx
@@ -236,9 +247,9 @@ def _attach_metadata(
 def export_onnx(
     model: Gatv2CostModel,
     path: str | Path,
-    sample: Any,
+    sample: Data,
     config: ModelConfig,
-    metadata: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, MetadataValue] | None = None,
     verify: bool = True,
     opset: int = ONNX_OPSET,
 ) -> Path:
@@ -282,7 +293,7 @@ def export_onnx(
     return destination
 
 
-def make_session(path: str | Path) -> Any:
+def make_session(path: str | Path) -> InferenceSession:
     """Build a single-threaded onnxruntime session (deterministic and fast)."""
     import onnxruntime as ort
 
@@ -295,7 +306,7 @@ def make_session(path: str | Path) -> Any:
     )
 
 
-def _feeds(data: Any) -> dict[str, np.ndarray]:
+def _feeds(data: Data) -> dict[str, np.ndarray]:
     edge_attr = getattr(data, "edge_attr", None)
     if edge_attr is None:
         edge_attr = torch.zeros((0, EDGE_FEATURE_DIM), dtype=torch.float32)
@@ -306,13 +317,13 @@ def _feeds(data: Any) -> dict[str, np.ndarray]:
     }
 
 
-def run_log_latency(session: Any, data: Any) -> float:
+def run_log_latency(session: InferenceSession, data: Data) -> float:
     """Run the ONNX graph and return the predicted ``log1p(latency_ms)``."""
     output = session.run(["log_latency"], _feeds(data))[0]
     return float(np.asarray(output).reshape(-1)[0])
 
 
-def run_attention(session: Any, data: Any) -> tuple[Tensor, Tensor] | None:
+def run_attention(session: InferenceSession, data: Data) -> tuple[Tensor, Tensor] | None:
     """Return ``(edge_index, alpha)`` for the last attention layer, if any."""
     edges, alpha = session.run(["attended_edges", "attention"], _feeds(data))
     edges_tensor = torch.as_tensor(np.asarray(edges), dtype=torch.long)

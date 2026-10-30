@@ -46,15 +46,16 @@ winner, and the copilot streams an explanation of the result.
 - **Read-only target access:** the `query_optimizer` role can only `SELECT`; the API never applies
   DDL to the target database.
 - **EXPLAIN sandbox:** `EXPLAIN (ANALYZE, FORMAT JSON)` runs inside a transaction with a 5s
-  `statement_timeout` and an unconditional rollback.
+  `statement_timeout` and an unconditional rollback. The baseline is the **median of 5** runs
+  (fastest and slowest dropped) so Postgres caching cannot decide the number.
 - **SQL guard:** `sqlglot` AST parsing rejects anything that is not exactly one read-only `SELECT`.
   No regex sanitising anywhere.
 - **hypopg shadow DB:** hypothetical indexes are validated in a `tmpfs`-backed PostgreSQL 16
   container, then emitted as reviewable `CREATE INDEX CONCURRENTLY` scripts.
 - **Security:** HS256 bearer tokens minted by `python -m src.cli.token`, Fernet-encrypted DSNs at
   rest, CORS locked to `http://localhost:3000`, and a per-IP rate limit on `/queries/analyze`.
-- **Infrastructure:** `docker-compose.yml` runs metadata, target, shadow, API, and nginx services
-  with health checks and loopback-only ports.
+- **Infrastructure:** `docker-compose.yml` runs metadata, target, shadow, API, web (Next.js), and
+  nginx services with health checks and loopback-only ports.
 
 See `docs/phase-2-backend-api.md` for the endpoint table and reviewer checklist.
 
@@ -138,7 +139,7 @@ DeepTune-DB/
 │       └── tests/            # 70 engine and boundary tests
 ├── infra/                    # Postgres init, hypopg shadow DB, nginx
 ├── docs/                     # Phase records and implementation notes
-├── docker-compose.yml        # metadata + target + shadow + api + nginx
+├── docker-compose.yml        # metadata + target + shadow + api + web + nginx
 ├── AGENTS.md                 # Project constitution (boundaries + never-list)
 ├── .env.example              # Environment template (no secrets)
 └── Makefile                  # install / dev / build / lint / api / ml / compose
@@ -154,14 +155,14 @@ Model weights live in `packages/ml-engine/weights/` and are git-ignored.
 
 ```bash
 cp .env.example .env          # fill in JWT_SECRET and CREDENTIAL_ENCRYPTION_KEY
-docker compose up -d --build  # metadata_db, target_db, shadow_db, api, nginx
+docker compose up -d --build  # metadata_db, target_db, shadow_db, api, web, nginx
 
 cd apps/api
 .venv/Scripts/python -m src.cli.token --subject dev   # mint a bearer token
-
-cd ../../apps/web
-npm install && npm run dev
 ```
+
+The UI is at `http://localhost:3000` and the API at `http://localhost:8000`. For frontend hot
+reload, stop the `web` service (`docker compose stop web`) and run `make dev` instead.
 
 Open <http://localhost:3000>, paste the token into `localStorage["deeptune.token"]` (or set
 `NEXT_PUBLIC_API_TOKEN`), then press `Ctrl+Enter` in the editor. The status bar shows
@@ -196,7 +197,7 @@ cd apps/api
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-dev.txt
 .venv/Scripts/python -m pip install -r requirements-ml.txt   # torch + PyG + onnxruntime (CPU)
-.venv/Scripts/python -m pytest                                # 61 tests
+.venv/Scripts/python -m pytest                                # 68 tests
 .venv/Scripts/python -m uvicorn src.main:app --reload --port 8000
 ```
 
