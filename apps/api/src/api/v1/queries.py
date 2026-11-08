@@ -54,12 +54,17 @@ async def analyze_query(
     return AnalyzeAccepted(
         run_id=run.run_id,
         status="queued",
-        message="Analysis accepted. Poll the status endpoint for progress.",
+        message="Analysis accepted. Stream progress from WS /api/v1/ws/optimize.",
     )
 
 
-@router.get("/{run_id}/status", response_model=RunStatus)
+@router.get("/{run_id}/status", response_model=RunStatus, deprecated=True)
 async def get_run_status(run_id: str, request: Request) -> RunStatus:
+    """DEPRECATED: use ``WS /api/v1/ws/optimize/{run_id}`` for live progress.
+
+    Retained only as a non-WebSocket fallback (curl, scripts, older clients).
+    The console never calls this route; it opens the progress socket instead.
+    """
     state = get_state(request)
     run = await state.runs.get(run_id)
     if run is None:
@@ -89,12 +94,12 @@ async def get_run_results(run_id: str, request: Request) -> AnalysisResult:
         raise conflict(
             "RUN_FAILED",
             run.error or "The analysis failed.",
-            "Inspect the status endpoint log, fix the query, and submit it again.",
+            "Inspect the stream error frame, fix the query, and submit it again.",
         )
     if run.result is None or run.status != "completed":
         raise conflict(
             "RUN_NOT_READY",
             f"Run is still {run.status}.",
-            "Poll the status endpoint until progress_percentage reaches 100.",
+            "Wait for the complete frame on the optimize WebSocket, then retry.",
         )
     return run.result

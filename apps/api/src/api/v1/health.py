@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request
 from src.api.deps import get_state
 from src.db.metadata import MemoryConnectionStore
 from src.schemas.system import HealthResponse
+from src.services.ws_registry import active_connection_total
 
 router = APIRouter(tags=["system"])
 
@@ -23,4 +24,6 @@ async def health(request: Request) -> HealthResponse:
             if isinstance(state.store, MemoryConnectionStore)
             else "postgres"
         ),
+        # Patch 3: a number above the number of open tabs means a leaked peer.
+        ws_active_connections=active_connection_total(),
     )

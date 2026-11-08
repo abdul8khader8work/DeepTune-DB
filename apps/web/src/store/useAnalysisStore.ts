@@ -1,15 +1,14 @@
 "use client";
 
 import { create } from "zustand";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, optimizeSocketUrl } from "@/lib/api";
 import { useCopilotStore } from "@/store/useCopilotStore";
 import { useSessionStore } from "@/store/useSessionStore";
-import type { AnalysisResult, OptimizationGoal } from "@/types/api";
+import type { AnalysisResult, OptimizationGoal, OptimizeFrame } from "@/types/api";
 
 export type AnalysisPhase = "idle" | "running" | "done" | "error";
 
-const POLL_INTERVAL_MS = 400;
-const MAX_POLLS = 150;
+const STREAM_TIMEOUT_MS = 90_000;
 
 type AnalysisState = {
   phase: AnalysisPhase;
@@ -22,17 +21,99 @@ type AnalysisState = {
   reset: () => void;
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
+type StreamHandlers = {
+  /** `null` keeps the current percentage (a log line has no progress value). */
+  onProgress: (percentage: number | null, step: string) => void;
+};
 
 function describe(error: unknown): string {
   if (error instanceof ApiError) {
     return error.suggestion ? `${error.message} ${error.suggestion}` : error.message;
   }
   return error instanceof Error ? error.message : "Unexpected error";
+}
+
+/**
+ * Stream one run from `WS /ws/optimize/{run_id}` (Patch 3).
+ *
+ * No `setInterval` and no REST polling: the socket emits `progress`,
+ * `log_update`, `complete`, `error`, and a `ping` heartbeat. `seq` is monotonic,
+ * so a snapshot that raced a live broadcast is discarded instead of rewinding
+ * the progress bar.
+ */
+function awaitRun(runId: string, handlers: StreamHandlers): Promise<AnalysisResult> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(optimizeSocketUrl(runId));
+    let lastSeq = -1;
+    let settled = false;
+    let watchdog = 0;
+
+    const finish = (error: Error | null, result?: AnalysisResult): void => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(watchdog);
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      socket.close();
+      if (error) {
+        reject(error);
+        return;
+      }
+      if (result) {
+        resolve(result);
+        return;
+      }
+      reject(new Error("The progress stream ended without a result."));
+    };
+
+    watchdog = window.setTimeout(() => {
+      finish(new Error("Analysis timed out before the plan was ready."));
+    }, STREAM_TIMEOUT_MS);
+
+    socket.onmessage = (event: MessageEvent) => {
+      let frame: OptimizeFrame;
+      try {
+        frame = JSON.parse(String(event.data)) as OptimizeFrame;
+      } catch {
+        return; // Ignore malformed frames rather than tearing down the socket.
+      }
+      if (frame.type === "ping") return;
+      if (frame.seq < lastSeq) return;
+      lastSeq = frame.seq;
+
+      if (frame.type === "progress") {
+        handlers.onProgress(
+          frame.payload.percentage,
+          frame.payload.message || frame.payload.step,
+        );
+        return;
+      }
+      if (frame.type === "log_update") {
+        handlers.onProgress(null, frame.payload.text);
+        return;
+      }
+      if (frame.type === "complete") {
+        finish(null, frame.payload);
+        return;
+      }
+      finish(new Error(frame.payload.message));
+    };
+
+    socket.onerror = () => {
+      finish(new Error("The progress WebSocket failed to connect."));
+    };
+    socket.onclose = (event: CloseEvent) => {
+      if (settled) return;
+      finish(
+        new Error(
+          event.code === 4401
+            ? "The progress socket rejected the bearer token. Mint one with `python -m src.cli.token` and paste it with `storeToken(...)`."
+            : "The progress stream closed before the analysis finished.",
+        ),
+      );
+    };
+  });
 }
 
 export const useAnalysisStore = create<AnalysisState>((set, get) => ({
@@ -52,6 +133,16 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
     if (get().phase === "running") return;
     set({ phase: "running", progress: 0, step: "Connecting…", error: null, result: null });
 
+    const report = (percentage: number | null, step: string): void => {
+      set((state) => ({
+        progress:
+          percentage === null
+            ? state.progress
+            : Math.max(state.progress, Math.min(100, percentage)),
+        step: step || state.step,
+      }));
+    };
+
     try {
       const connectionId = await useSessionStore.getState().ensureConnection();
       const accepted = await api.analyze({
@@ -61,22 +152,9 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
       });
       set({ runId: accepted.run_id, step: accepted.message });
 
-      for (let attempt = 0; attempt < MAX_POLLS; attempt += 1) {
-        const status = await api.runStatus(accepted.run_id);
-        set({ progress: status.progress_percentage, step: status.current_step_log });
-
-        if (status.status === "failed") {
-          throw new Error(status.current_step_log);
-        }
-        if (status.status === "completed") {
-          const result = await api.runResults(accepted.run_id);
-          set({ phase: "done", progress: 100, result, step: "Analysis complete." });
-          useCopilotStore.getState().attach(accepted.run_id);
-          return;
-        }
-        await sleep(POLL_INTERVAL_MS);
-      }
-      throw new Error("Analysis timed out before the plan was ready.");
+      const result = await awaitRun(accepted.run_id, { onProgress: report });
+      set({ phase: "done", progress: 100, result, step: "Analysis complete." });
+      useCopilotStore.getState().attach(accepted.run_id);
     } catch (error) {
       set({ phase: "error", error: describe(error), step: "Analysis failed." });
     }

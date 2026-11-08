@@ -183,7 +183,7 @@ The prose is real, the pace is staged. Two knobs, both configurable and both zer
 | `src/lib/plan-adapter.ts` | DAG → React Flow layout, depth from edges, hero metrics |
 | `src/lib/morph.ts` | the time-travel motion value the node cards subscribe to (Patch 3) |
 | `src/store/useSessionStore.ts` | health/engine probe, demo connection, schema fetch |
-| `src/store/useAnalysisStore.ts` | analyze → poll → results state machine |
+| `src/store/useAnalysisStore.ts` | analyze → WebSocket progress stream → results state machine |
 | `src/store/useCopilotStore.ts` | WebSocket lifecycle, token accumulation, `thinking` state, tool list |
 | `src/components/**` | live DAG, hero metrics, recommendation card, status bar, schema explorer |
 
@@ -192,7 +192,8 @@ Behaviour details:
 - `AppShell` probes `/health` and `/engine/status` on mount, so the status bar shows the real
   backend (`GATv2 (neuro-symbolic)` vs `heuristic fallback`) instead of a hardcoded label.
 - `Run & Optimize` sends the editor SQL with the selected goal (read / balanced / storage),
-  polls status at 400 ms, and attaches the copilot socket when the run completes.
+  opens `WS /ws/optimize/{run_id}`, applies sequenced progress/log frames, and attaches the
+  copilot socket when the `complete` frame arrives. No `setInterval`, no REST polling.
 - The recommendation card copies the real SQL and applies/reverts the hypothetical index in the
   shadow DB. It keeps the Phase 1 sample plan as the offline fallback so the UI never looks broken
   when the API is down.

@@ -64,13 +64,15 @@ Everything lives under `docs/`:
   envelope. Routes: connect, schema, analyze, status, results, apply/revert, health.
 - **Read-only target access:** the `query_optimizer` role can only `SELECT`; the API never applies
   DDL to the target database.
-- **EXPLAIN sandbox:** `EXPLAIN (ANALYZE, FORMAT JSON)` runs inside a transaction with a 5s
-  `statement_timeout` and an unconditional rollback. The baseline is the **median of 5** runs
-  (fastest and slowest dropped) so Postgres caching cannot decide the number.
+- **EXPLAIN sandbox:** `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` runs inside a transaction with a
+  5s `statement_timeout` and an unconditional rollback. Every latency uses the **median-of-5 runs
+  protocol**: five executions, the fastest and slowest samples discarded, and the median of the
+  remaining three reported, so Postgres caching cannot decide the number.
 - **SQL guard:** `sqlglot` AST parsing rejects anything that is not exactly one read-only `SELECT`.
   No regex sanitising anywhere.
-- **hypopg shadow DB:** hypothetical indexes are validated in a `tmpfs`-backed PostgreSQL 16
-  container, then emitted as reviewable `CREATE INDEX CONCURRENTLY` scripts.
+- **hypopg shadow DB:** hypothetical indexes are validated in a disk-backed PostgreSQL 16
+  container (`shadow_data` named volume), then emitted as reviewable `CREATE INDEX CONCURRENTLY`
+  scripts. Data no longer lives in `tmpfs`, so a growing demo dataset cannot exhaust host RAM.
 - **Security:** HS256 bearer tokens minted by `python -m src.cli.token`, Fernet-encrypted DSNs at
   rest, CORS locked to `http://localhost:3000`, and a per-IP rate limit on `/queries/analyze`.
 - **Infrastructure:** `docker-compose.yml` runs metadata, target, shadow, API, web (Next.js), and
@@ -109,8 +111,13 @@ See `docs/phase-3-ml-engine.md` for the graph contract, pruning table, and full 
 
 ## What is in Phase 4
 
-- **One data path:** the console calls `POST /queries/analyze`, polls the run, and renders the
-  returned DAG. The Phase 1 mock plan survives only as an offline fallback.
+- **One data path:** the console calls `POST /queries/analyze`, **opens a WebSocket stream** at
+  `/ws/optimize/{run_id}`, receives real-time `log_update` / `progress` / `complete` events, and
+  renders the returned DAG. The Phase 1 mock plan survives only as an offline fallback.
+- **No polling:** `/queries/{run_id}/status` is deprecated and retained only for non-WebSocket
+  clients; the console never calls it. Both sockets register in a connection registry and are
+  unregistered in a `finally`, and uvicorn's 30s + 10s heartbeat evicts dead peers, so a closed
+  tab cannot leak a zombie connection.
 - **Engine loaded once:** `PlanOptimizer` is constructed in the FastAPI `lifespan` on a worker
   thread, never inside a route. `GET /engine/status` reports the loaded checkpoint, parameter count,
   device, layer/head configuration, and the active inference `runtime` (`onnx`, `torch`, or
@@ -183,6 +190,20 @@ docker compose up -d --build  # metadata_db, target_db, shadow_db, api, web, ngi
 cd apps/api
 .venv/Scripts/python -m src.cli.token --subject dev   # mint a bearer token
 ```
+
+> **Demo dataset limit:** keep the demo dataset under approximately **50 MB**. The shadow
+> database is now disk-backed, but large datasets make `hypopg` validation and
+> `EXPLAIN (ANALYZE)` slow during live demos.
+>
+> If you change `infra/postgres/demo.sql`, reset the shadow DB volume so PostgreSQL re-runs the
+> init script:
+>
+> ```bash
+> docker compose stop shadow_db
+> docker compose rm -f shadow_db
+> docker volume rm deeptune_shadow_data
+> docker compose up -d shadow_db
+> ```
 
 The UI is at `http://localhost:3000` and the API at `http://localhost:8000`. For frontend hot
 reload, stop the `web` service (`docker compose stop web`) and run `make dev` instead.

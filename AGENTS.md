@@ -39,10 +39,19 @@ Execute in order and stop for approval after each phase.
 - NEVER load the PyTorch model inside a route handler. Load once in `lifespan`.
 - NEVER use regex to sanitise SQL. Use `sqlglot` AST parsing + transaction-wrapped `EXPLAIN`.
 - NEVER execute `EXPLAIN (ANALYZE)` outside a transaction with `SET statement_timeout = '5000'` and rollback.
+- NEVER use `setInterval` or REST polling for optimization progress. All real-time streaming MUST use WebSocket (`WS /ws/optimize/{run_id}`). The deprecated `/queries/{run_id}/status` REST endpoint exists only for non-WS fallback and must never be the primary path.
 - NEVER auto-apply DDL to the Target DB. Emit `CREATE INDEX CONCURRENTLY` for user review.
 - NEVER use "Accuracy" for the GNN regressor. Use MAE, RMSE, Spearman ρ.
 - NEVER exceed 200 lines per React component file.
 - NEVER commit `.env` files, credentials, or model weights.
+
+### Measurement protocol (canonical)
+
+All latency numbers use the **median-of-5 runs protocol**: execute
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` five times, discard the fastest and
+slowest samples, and report the median of the remaining three.
+`EXPLAIN_MEASUREMENT_RUNS` controls the sample count. Never document a "warm-up
+run", an "average of the next two", or a single-shot latency as the benchmark.
 
 ## 4. Design tokens (single source of truth)
 

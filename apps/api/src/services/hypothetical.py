@@ -24,13 +24,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 import asyncpg
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
+from src.core.cache import cached
 from src.services.explain import ExplainResult, result_from_payload
 
 logger = logging.getLogger(__name__)
@@ -54,18 +56,22 @@ class PlanRequestLike(Protocol):
     def create_sqls(self) -> Sequence[str]: ...
 
 
+@cached(namespace="hypopg_sql")
 def to_hypopg_sql(create_sql: str) -> str:
     """Strip ``CONCURRENTLY``: hypopg cannot plan a concurrently built index.
 
     The statement is parsed with sqlglot (never regex-edited) and re-emitted for
     PostgreSQL, so a malformed or non-``CREATE INDEX`` string is rejected before
     it reaches the shadow database.
+
+    Patch 3: the pure string-to-string translation is cached, because beam
+    prefetch and apply/revert re-plan the same candidate SQL many times per run.
     """
     try:
         statement = sqlglot.parse_one(create_sql, read="postgres")
     except ParseError as exc:
         raise HypotheticalPlanError("candidate SQL is not parseable") from exc
-    if not isinstance(statement, exp.Create) or statement.kind.upper() != "INDEX":
+    if not isinstance(statement, exp.Create) or (statement.kind or "").upper() != "INDEX":
         raise HypotheticalPlanError("candidate SQL is not a CREATE INDEX statement")
     statement.set("concurrently", False)
     return statement.sql(dialect="postgres")
@@ -102,7 +108,7 @@ async def get_hypothetical_qep(
             if row is None:
                 raise HypotheticalPlanError("hypopg_create_index returned no row")
             index_ids.append(int(row["indexrelid"]))
-        row = await conn.fetchrow(f"EXPLAIN (ANALYZE, FORMAT JSON) {target_query}")
+        row = await conn.fetchrow(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {target_query}")
         if row is None:
             raise HypotheticalPlanError("EXPLAIN returned no rows")
         result = result_from_payload(row[0])

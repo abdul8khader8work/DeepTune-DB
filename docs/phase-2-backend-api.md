@@ -66,7 +66,10 @@ still works; the health endpoint reports which store is active.
 ### 5. Shadow database
 
 - `infra/shadow_db/Dockerfile` installs `postgresql-16-hypopg` on top of `postgres:16-bookworm`.
-- The data directory is a `tmpfs`, so hypothetical indexes never persist.
+- The data directory is a named Docker volume (`shadow_data`), not `tmpfs` (Patch 3): the demo
+  data survives restarts without consuming host RAM. Hypothetical indexes still live only in the
+  hypopg session and are dropped (or `hypopg_reset()`) inside the same transaction, so no index
+  persists in the catalog.
 - `infra/postgres/demo.sql` seeds an identical schema (20k customers, 5k products, 120k orders)
   in both the target and shadow DBs and runs `VACUUM ANALYZE` once at init.
 - `TARGET_ALLOW_MAINTENANCE` defaults to `true` (Patch 2): before measuring the baseline the
@@ -94,14 +97,20 @@ still works; the health endpoint reports which store is active.
    fastest optimised plan.
 7. Return `CREATE INDEX CONCURRENTLY` scripts, storage overhead, write impact, and confidence.
 
-#### Steady-state measurement (Patch 2)
+#### Steady-state measurement (Patch 2; canonical wording, Patch 3)
 
-A single `EXPLAIN (ANALYZE)` is biased by Postgres caching: the first execution pays for cold
-shared buffers and an immediate repeat can beat the steady state. `services/explain.py` now
-exposes `explain_steady_state()`, the "median of 5" rule:
+All latency measurements use the **median-of-5 runs protocol**:
+
+> Execute `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` five times, discard the fastest and slowest
+> samples, and report the median of the remaining three samples.
+
+The protocol eliminates outlier noise and prevents PostgreSQL cache effects from deciding the
+reported baseline or optimized time. A single `EXPLAIN (ANALYZE)` is biased by Postgres caching:
+the first execution pays for cold shared buffers and an immediate repeat can beat the steady
+state. `services/explain.py` exposes `explain_steady_state()`:
 
 ```text
-run EXPLAIN (ANALYZE) N times (default 5, EXPLAIN_MEASUREMENT_RUNS)
+run EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) N times (default 5, EXPLAIN_MEASUREMENT_RUNS)
 sort by Execution Time
 drop the fastest and the slowest sample
 return the median of the remaining N-2 runs (the whole result: plan, cost, rows)
@@ -169,7 +178,10 @@ curl -s -X POST localhost:8000/api/v1/queries/analyze \
   -d '{"connection_id":"<id>","sql_query":"SELECT * FROM orders WHERE status = '\''paid'\'' ORDER BY created_at DESC","optimization_goal":"balanced"}'
 ```
 
-Then poll `/queries/{run_id}/status` and fetch `/queries/{run_id}/results`. The nginx path is
+Then open `WS /api/v1/ws/optimize/{run_id}?token=...` and read the sequenced
+`log_update` / `progress` / `complete` / `error` frames (a `ping` arrives every 30s). The legacy
+`GET /queries/{run_id}/status` remains for non-WebSocket clients but is deprecated; fetch
+`/queries/{run_id}/results` only if a script missed the `complete` frame. The nginx path is
 `http://localhost:8080` with the same routes, and the containerised UI is at
 `http://localhost:3000` (`make dev` runs it with hot reload instead).
 
@@ -183,7 +195,8 @@ Then poll `/queries/{run_id}/status` and fetch `/queries/{run_id}/results`. The 
 - [x] DSNs encrypted at rest; logs redact credentials.
 - [x] CORS restricted to `http://localhost:3000`; analyze endpoint rate-limited.
 - [x] SQL length capped at 10,000 characters.
-- [x] Shadow DB uses `hypopg` on `tmpfs`; recommendations are `CREATE INDEX CONCURRENTLY`.
+- [x] Shadow DB uses `hypopg` on a disk-backed `shadow_data` volume; recommendations are
+      `CREATE INDEX CONCURRENTLY`.
 - [x] Pydantic models are strict; every response has a typed model.
 - [x] No imports from `apps/web` or `packages/ml-engine`; no ML training logic in the API.
 - [x] `.env` files and model weights remain git-ignored.

@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     hypopg_prefetch_limit: int = Field(default=48, ge=0, le=500)
     run_ttl_seconds: int = 1800
 
+    # --- Patch 3: in-memory cache (no Redis, no external service) ------------
+    cache_maxsize: int = Field(default=256, ge=1, le=100_000)
+    cache_ttl_seconds: int = Field(default=300, ge=0, le=86_400)
+
     # --- Phase 4: neuro-symbolic engine wiring ------------------------------
     ml_enabled: bool = True
     # Empty means "resolve from the repository layout" (see services/engine.py).

@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from src.api.deps import AppState
 from src.api.legacy import router as legacy_router
 from src.api.v1.router import router as v1_router
+from src.core.cache import init_cache
 from src.core.config import Settings, get_settings
 from src.core.errors import ApiError
 from src.core.logging import configure_logging
@@ -24,14 +25,23 @@ from src.db.metadata import create_connection_store
 from src.db.run_archive import create_run_archive
 from src.services.engine import load_engine
 from src.services.runs import AppliedRegistry, RunRegistry
+from src.services.ws_registry import optimize_registry
 
 logger = logging.getLogger(__name__)
+
+
+async def _broadcast_progress(run_id: str, frame: dict[str, object]) -> bool:
+    """Patch 3: pipeline progress goes to ``WS /ws/optimize/{run_id}`` only."""
+    return await optimize_registry.broadcast(run_id, frame)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = get_settings()
     configure_logging()
+    # Patch 3: process-local LRU+TTL cache. Initialised before any request can
+    # reach a @cached function; no Redis client is constructed anywhere.
+    init_cache(settings.cache_maxsize, settings.cache_ttl_seconds)
     store = await create_connection_store(settings)
     archive = await create_run_archive(settings.metadata_dsn)
     # The GATv2 checkpoint is loaded exactly once, off the event loop. A failure
@@ -40,7 +50,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.deeptune = AppState(
         settings=settings,
         store=store,
-        runs=RunRegistry(settings, archive),
+        runs=RunRegistry(settings, archive, broadcaster=_broadcast_progress),
         applied=AppliedRegistry(),
         engine=engine,
     )

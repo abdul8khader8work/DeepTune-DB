@@ -50,11 +50,17 @@ services:
       POSTGRES_DB: shadow_db
     ports:
       - "127.0.0.1:5433:5432"
-    # Reviewer mandate: hypothetical indexes live in RAM only.
-    tmpfs:
-      - /var/lib/postgresql/data
+    # Patch 3: do not use tmpfs for PostgreSQL data.
+    # tmpfs consumes host RAM and can OOM the machine when the demo dataset grows.
+    # The shadow DB is now disk-backed via a named Docker volume.
+    # Reset it after changing demo.sql with:
+    #   docker compose stop shadow_db
+    #   docker compose rm -f shadow_db
+    #   docker volume rm deeptune_shadow_data
+    #   docker compose up -d shadow_db
     shm_size: 256mb
     volumes:
+      - shadow_data:/var/lib/postgresql/data
       - ./infra/postgres/demo.sql:/docker-entrypoint-initdb.d/10-demo.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shadow_user -d shadow_db"]
@@ -68,6 +74,21 @@ services:
       # Root context: the image needs packages/ml-engine alongside apps/api.
       context: .
       dockerfile: apps/api/Dockerfile
+    # Patch 3: server-level heartbeat. Dead peers are evicted after 30s + 10s.
+    command:
+      - uvicorn
+      - src.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --ws-ping-interval
+      - "30"
+      - --ws-ping-timeout
+      - "10"
     environment:
       APP_ENV: ${APP_ENV:-dev}
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
@@ -133,3 +154,4 @@ services:
 volumes:
   metadata_data:
   target_data:
+  shadow_data:

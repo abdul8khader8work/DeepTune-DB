@@ -14,6 +14,10 @@ client clears its indicator as soon as any other frame arrives.
 
 Auth uses the same HS256 token as the REST surface, passed as a query
 parameter because browsers cannot set headers on a WebSocket handshake.
+
+Patch 3: every accepted socket is registered in ``copilot_registry`` and the
+registration is removed in a ``finally`` block, so a crashed handler or an
+abrupt tab close can never leave a zombie peer behind.
 """
 
 import asyncio
@@ -22,35 +26,19 @@ from collections.abc import Sequence
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from src.api.deps import AppState
-from src.core.errors import ApiError
-from src.core.security import decode_access_token
+from src.api.v1.sockets import (
+    WS_INTERNAL_ERROR,
+    WS_NOT_FOUND,
+    WS_UNAUTHORIZED,
+    socket_authorised,
+    socket_state,
+)
 from src.services import copilot as explainer
+from src.services.ws_registry import copilot_registry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["copilot"])
-
-_WS_UNAUTHORIZED = 4401
-_WS_NOT_FOUND = 4404
-
-
-def _state(websocket: WebSocket) -> AppState | None:
-    state = getattr(websocket.app.state, "deeptune", None)
-    return state if isinstance(state, AppState) else None
-
-
-def _authorised(websocket: WebSocket, state: AppState) -> bool:
-    if not state.settings.auth_enabled:
-        return True
-    token = websocket.query_params.get("token")
-    if not token:
-        return False
-    try:
-        decode_access_token(token, state.settings)
-    except ApiError:
-        return False
-    return True
 
 
 async def _emit(
@@ -78,21 +66,22 @@ async def _emit(
 
 @router.websocket("/ws/copilot/{run_id}")
 async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
-    state = _state(websocket)
+    state = socket_state(websocket)
     if state is None:  # pragma: no cover - lifespan guard
-        await websocket.close(code=1011)
+        await websocket.close(code=WS_INTERNAL_ERROR)
         return
 
-    if not _authorised(websocket, state):
-        await websocket.close(code=_WS_UNAUTHORIZED)
+    if not socket_authorised(websocket, state):
+        await websocket.close(code=WS_UNAUTHORIZED)
         return
 
     run = await state.runs.get(run_id)
     if run is None or run.result is None:
-        await websocket.close(code=_WS_NOT_FOUND)
+        await websocket.close(code=WS_NOT_FOUND)
         return
 
     await websocket.accept()
+    connection = await copilot_registry.register(run_id, websocket)
     result = run.result
     delay = state.settings.copilot_stream_delay_ms
     thinking = state.settings.copilot_thinking_delay_ms
@@ -112,6 +101,7 @@ async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
 
         while True:
             frame = await websocket.receive_json()
+            await copilot_registry.touch(run_id)
             question = str(frame.get("text", "")).strip() if isinstance(frame, dict) else ""
             if not question:
                 continue
@@ -125,6 +115,10 @@ async def copilot_socket(websocket: WebSocket, run_id: str) -> None:
             await websocket.send_json({"type": "done", "run_id": run_id})
     except WebSocketDisconnect:
         logger.info("Copilot socket for run %s closed by the client", run_id)
-    except Exception:  # noqa: BLE001 - never leak a traceback into the socket
+    except Exception:
         logger.exception("Copilot stream failed for run %s", run_id)
         await websocket.close(code=1011)
+    finally:
+        # Non-negotiable: a crashed handler must not leak its peer. The identity
+        # check keeps a replaced connection from evicting its replacement.
+        await copilot_registry.unregister(run_id, connection.websocket)

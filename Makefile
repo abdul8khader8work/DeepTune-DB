@@ -56,7 +56,7 @@ api-test:
 	cd $(API_DIR) && $(PYTHON) -m pytest
 
 api-run:
-	cd $(API_DIR) && $(PYTHON) -m uvicorn src.main:app --reload --port 8000
+	cd $(API_DIR) && $(PYTHON) -m uvicorn src.main:app --reload --port 8000 --ws-ping-interval 30 --ws-ping-timeout 10
 
 # --- Phase 3: neuro-symbolic ML engine -------------------------------------
 

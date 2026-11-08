@@ -17,7 +17,6 @@ import type {
   EngineStatus,
   HealthResponse,
   RevertResponse,
-  RunStatusResponse,
   SchemaResponse,
 } from "@/types/api";
 
@@ -121,11 +120,6 @@ export const api = {
   analyze: (payload: AnalyzeRequest): Promise<AnalyzeAccepted> =>
     post<AnalyzeAccepted>(`${V1}/queries/analyze`, payload),
 
-  runStatus: (runId: string): Promise<RunStatusResponse> =>
-    request<RunStatusResponse>(
-      `${V1}/queries/${encodeURIComponent(runId)}/status`,
-    ),
-
   runResults: (runId: string): Promise<AnalysisResult> =>
     request<AnalysisResult>(
       `${V1}/queries/${encodeURIComponent(runId)}/results`,
@@ -144,12 +138,21 @@ export const api = {
     ),
 };
 
-/** Build the copilot socket URL, appending the bearer token as a query param. */
-export function copilotSocketUrl(runId: string): string {
+/** Build a WebSocket URL, appending the bearer token as a query param. */
+function socketUrl(path: string): string {
   const base = (
     process.env.NEXT_PUBLIC_WS_URL ?? API_BASE_URL.replace(/^http/, "ws")
   ).replace(/\/$/, "");
   const token = readToken();
   const query = token ? `?token=${encodeURIComponent(token)}` : "";
-  return `${base}${V1}/ws/copilot/${encodeURIComponent(runId)}${query}`;
+  return `${base}${path}${query}`;
+}
+
+export function copilotSocketUrl(runId: string): string {
+  return socketUrl(`${V1}/ws/copilot/${encodeURIComponent(runId)}`);
+}
+
+/** Patch 3: the only progress channel; `/queries/{run_id}/status` is legacy. */
+export function optimizeSocketUrl(runId: string): string {
+  return socketUrl(`${V1}/ws/optimize/${encodeURIComponent(runId)}`);
 }

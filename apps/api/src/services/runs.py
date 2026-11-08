@@ -4,7 +4,9 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import asyncpg
 
@@ -17,6 +19,27 @@ from src.schemas.analysis import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: ``(run_id, frame) -> delivered``; returns False when no peer is listening.
+Broadcaster = Callable[[str, dict[str, object]], Awaitable[bool]]
+
+_STEP_FOR: dict[str, str] = {
+    "queued": "parsing",
+    "parsing": "parsing",
+    "gnn_inference": "gnn",
+    "hypopg_validation": "hypopg",
+    "completed": "done",
+    "failed": "error",
+}
+
+
+def _iso_now() -> str:
+    return (
+        datetime.now(UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
 
 
 @dataclass
@@ -37,12 +60,21 @@ class Run:
     error: str | None = None
     created_at: float = field(default_factory=time.monotonic)
     recommendations: dict[str, RecommendationState] = field(default_factory=dict)
+    #: Monotonic frame sequence: a late snapshot can never overwrite newer
+    #: progress on the client.
+    seq: int = 0
 
 
 class RunRegistry:
-    def __init__(self, settings: Settings, archive: RunArchive | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        archive: RunArchive | None = None,
+        broadcaster: Broadcaster | None = None,
+    ) -> None:
         self._settings = settings
         self._archive: RunArchive = archive or NullRunArchive()
+        self._broadcaster = broadcaster
         self._runs: dict[str, Run] = {}
         self._lock = asyncio.Lock()
 
@@ -65,7 +97,7 @@ class RunRegistry:
         """Archive best-effort: a metadata DB fault must never fail a run."""
         try:
             await self._archive.record(snapshot)
-        except Exception:  # noqa: BLE001 - archival is not on the critical path
+        except Exception:
             logger.warning("Could not archive run %s", snapshot.run_id, exc_info=True)
 
     async def create(self, connection_id: str) -> Run:
@@ -95,6 +127,9 @@ class RunRegistry:
             run.status = status
             run.progress = max(0, min(100, progress))
             run.log = log
+            run.seq += 1
+            frames = self._state_frames(run)
+        await self._publish(run_id, frames)
 
     async def complete(
         self,
@@ -113,8 +148,11 @@ class RunRegistry:
             run.recommendations = {
                 item.recommendation.id: item for item in recommendations
             }
+            run.seq += 1
             snapshot = self._snapshot(run)
+            frames = [*self._state_frames(run), self._complete_frame(run)]
         await self._record(snapshot)
+        await self._publish(run_id, frames)
 
     async def fail(self, run_id: str, message: str) -> None:
         async with self._lock:
@@ -124,8 +162,72 @@ class RunRegistry:
             run.status = "failed"
             run.error = message
             run.log = message
+            run.seq += 1
             snapshot = self._snapshot(run)
+            frames = [*self._state_frames(run), self._error_frame(run)]
         await self._record(snapshot)
+        await self._publish(run_id, frames)
+
+    def snapshot_frames(self, run: Run) -> list[dict[str, object]]:
+        """Frames that bring a freshly connected client up to the current state."""
+        frames = self._state_frames(run)
+        if run.status == "completed" and run.result is not None:
+            frames.append(self._complete_frame(run))
+        elif run.status == "failed":
+            frames.append(self._error_frame(run))
+        return frames
+
+    def _state_frames(self, run: Run) -> list[dict[str, object]]:
+        return [
+            {
+                "type": "progress",
+                "seq": run.seq,
+                "payload": {
+                    "percentage": run.progress,
+                    "step": _STEP_FOR.get(run.status, "parsing"),
+                    "status": run.status,
+                    "message": run.log,
+                },
+            },
+            {
+                "type": "log_update",
+                "seq": run.seq,
+                "payload": {
+                    "ts": _iso_now(),
+                    "level": (
+                        "err"
+                        if run.status == "failed"
+                        else "ok"
+                        if run.status == "completed"
+                        else "info"
+                    ),
+                    "text": run.log,
+                },
+            },
+        ]
+
+    def _complete_frame(self, run: Run) -> dict[str, object]:
+        payload = run.result.model_dump(mode="json") if run.result is not None else {}
+        return {"type": "complete", "seq": run.seq, "payload": payload}
+
+    def _error_frame(self, run: Run) -> dict[str, object]:
+        return {
+            "type": "error",
+            "seq": run.seq,
+            "payload": {
+                "code": "ANALYSIS_FAILED",
+                "message": run.error or run.log,
+            },
+        }
+
+    async def _publish(self, run_id: str, frames: list[dict[str, object]]) -> None:
+        if self._broadcaster is None:
+            return
+        for frame in frames:
+            try:
+                await self._broadcaster(run_id, frame)
+            except Exception:
+                logger.debug("Progress broadcast failed for run %s", run_id)
 
     async def find_recommendation(
         self, recommendation_id: str

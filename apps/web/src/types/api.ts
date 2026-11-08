@@ -195,3 +195,32 @@ export interface CopilotFrame {
   result?: string;
   status?: "running" | "done" | "error";
 }
+
+export type OptimizeStep = "parsing" | "gnn" | "hypopg" | "done" | "error";
+
+export interface OptimizeProgress {
+  percentage: number;
+  step: OptimizeStep;
+  status: RunState;
+  message: string;
+}
+
+export interface OptimizeLog {
+  ts: string;
+  level: "info" | "run" | "ok" | "err";
+  text: string;
+}
+
+/**
+ * Frames exchanged on `/api/v1/ws/optimize/{run_id}` (Patch 3, Task 5).
+ *
+ * `seq` is monotonic per run; the store drops any frame older than the last
+ * one it applied, so a snapshot that raced a live broadcast cannot rewind the
+ * progress bar.
+ */
+export type OptimizeFrame =
+  | { type: "progress"; seq: number; payload: OptimizeProgress }
+  | { type: "log_update"; seq: number; payload: OptimizeLog }
+  | { type: "complete"; seq: number; payload: AnalysisResult }
+  | { type: "error"; seq: number; payload: { code: string; message: string } }
+  | { type: "ping" };

@@ -10,7 +10,7 @@ directory holds the phase records and the source-of-truth blueprint documents.
 | [`phase-1-ui-skeleton.md`](phase-1-ui-skeleton.md) | `apps/web/` | 3-pane console, design tokens, React Flow DAG, time-travel slider |
 | [`phase-2-backend-api.md`](phase-2-backend-api.md) | `apps/api/`, `infra/` | strict contracts, sqlglot guard, EXPLAIN sandbox, hypopg shadow DB |
 | [`phase-3-ml-engine.md`](phase-3-ml-engine.md) | `packages/ml-engine/` | EXPLAIN→PyG parser, GATv2 cost model, pruning, beam search |
-| [`phase-4-integration.md`](phase-4-integration.md) | web + API + engine | live DAG, copilot streaming, ONNX inference, the DAG morph (§6.1) |
+| [`phase-4-integration.md`](phase-4-integration.md) | web + API + engine | live DAG, WebSocket progress + copilot streaming, ONNX inference, the DAG morph (§6.1) |
 
 ## Blueprints (`blueprints/`)
 
@@ -38,6 +38,21 @@ previously scattered across the repository root; Patch 4 centralised them here.
 | `Literature_Suvery_Papers.xlsx`, `Literature_Suvery_Papers_WITH_Volumnes.xlsx` | survey matrix |
 | `patchfile_1.md.docx` | the five-patch remediation brief (patches 0–4) |
 | `listing out the essential things.txt` | the original kickoff note |
+
+## Measurement protocol
+
+Every latency value in this repository — baseline, optimized, and hypopg-validated — uses the
+**median-of-5 runs protocol**:
+
+> Execute `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` five times, discard the fastest and slowest
+> samples, and report the median of the remaining three samples.
+
+`EXPLAIN_MEASUREMENT_RUNS` (default `5`) controls the sample count and
+`apps/api/src/services/explain.py::explain_steady_state()` implements the trim. There is no
+"warm-up run", no "average of the next two", and no single-shot latency anywhere in the codebase.
+
+> The original blueprint chapters remain only as `.docx` files under `blueprints/`; this section
+> is the maintained canonical text where a converted `.md` chapter is absent.
 
 ## Conventions
 

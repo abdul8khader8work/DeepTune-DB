@@ -1,9 +1,9 @@
-"""Transaction-wrapped EXPLAIN (ANALYZE, FORMAT JSON) with timeout + rollback."""
+"""Transaction-wrapped EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) with timeout + rollback."""
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import asyncpg
 
@@ -73,7 +73,7 @@ async def explain_analyze(
     await transaction.start()
     try:
         await conn.execute(f"SET LOCAL statement_timeout = '{timeout}'")
-        row = await conn.fetchrow(f"EXPLAIN (ANALYZE, FORMAT JSON) {sql}")
+        row = await conn.fetchrow(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}")
     finally:
         await transaction.rollback()
 
@@ -107,9 +107,10 @@ async def explain_steady_state(
     A single ``EXPLAIN (ANALYZE)`` is biased by Postgres caching: the first run
     pays for cold shared buffers, and an immediate repeat can be faster than the
     steady state because the plan and its pages are already resident. The
-    "median of 5" rule discards the fastest and slowest samples and reports the
-    middle one, so neither the cache-cold nor the cache-hot outlier decides the
-    baseline.
+    **median-of-5 runs protocol** executes ``EXPLAIN (ANALYZE, BUFFERS, FORMAT
+    JSON)`` five times, discards the fastest and slowest samples, and reports the
+    median of the remaining three, so neither the cache-cold nor the cache-hot
+    outlier decides the baseline.
 
     Every sample runs in its own rolled-back transaction (see
     :func:`explain_analyze`); the SQL must already be validated as a single
