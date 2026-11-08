@@ -58,6 +58,95 @@ class _State:
     write_penalty: float
 
 
+def configuration_key(configuration: Sequence[IndexCandidate]) -> str:
+    """Stable, order-insensitive id for a set of candidate indexes.
+
+    The beam, the hypothesis cache, and the API all key configurations by this
+    string, so a plan fetched for ``{a, b}`` is found again when the beam reaches
+    ``(b, a)``.
+    """
+    return "|".join(sorted(candidate.id for candidate in configuration))
+
+
+def within_storage_budget(
+    configuration: Sequence[IndexCandidate],
+    catalog: SchemaCatalog | None,
+    ratio: float = STORAGE_BUDGET_RATIO,
+) -> bool:
+    """One index per table plus the per-table storage budget check."""
+    if catalog is None:
+        return True
+    totals: dict[tuple[str, str], int] = defaultdict(int)
+    for candidate in configuration:
+        totals[(candidate.table.schema, candidate.table.name)] += candidate.storage_bytes
+    for (schema_name, table_name), total in totals.items():
+        table = catalog.table(schema_name, table_name)
+        if table is None or table.effective_bytes <= 0:
+            continue
+        if total > table.effective_bytes * ratio:
+            return False
+    return True
+
+
+def enumerate_configurations(
+    candidates: Sequence[IndexCandidate],
+    catalog: SchemaCatalog | None = None,
+    *,
+    max_indexes: int = MAX_INDEXES,
+    storage_budget_ratio: float = STORAGE_BUDGET_RATIO,
+    limit: int | None = None,
+) -> list[tuple[IndexCandidate, ...]]:
+    """Breadth-first list of every configuration the beam can reach.
+
+    Patch 2 Task 3: the caller injects these through ``hypopg`` *before* the
+    search so the GNN can score real post-index plans. Enumeration follows the
+    same constraints as :meth:`BeamSearch.search` (no repeated id, one index per
+    table, storage budget) and is ordered by depth: all single indexes first,
+    then pairs, then triples.
+    """
+    if limit is not None and limit <= 0:
+        return []
+    configurations: list[tuple[IndexCandidate, ...]] = []
+    frontier: list[tuple[IndexCandidate, ...]] = []
+    for candidate in candidates:
+        configuration = (candidate,)
+        if not within_storage_budget(configuration, catalog, storage_budget_ratio):
+            continue
+        frontier.append(configuration)
+        configurations.append(configuration)
+        if limit is not None and len(configurations) >= limit:
+            return configurations
+    if not frontier:
+        return configurations
+
+    seen = {configuration_key(configuration) for configuration in configurations}
+    for _depth in range(2, max(1, int(max_indexes)) + 1):
+        next_frontier: list[tuple[IndexCandidate, ...]] = []
+        for state in frontier:
+            used_ids = {candidate.id for candidate in state}
+            used_tables = {candidate.table.qualified_name for candidate in state}
+            for candidate in candidates:
+                if candidate.id in used_ids:
+                    continue
+                if candidate.table.qualified_name in used_tables:
+                    continue
+                key = configuration_key(state + (candidate,))
+                if key in seen:
+                    continue
+                configuration = state + (candidate,)
+                if not within_storage_budget(configuration, catalog, storage_budget_ratio):
+                    continue
+                seen.add(key)
+                next_frontier.append(configuration)
+                configurations.append(configuration)
+                if limit is not None and len(configurations) >= limit:
+                    return configurations
+        if not next_frontier:
+            break
+        frontier = next_frontier
+    return configurations
+
+
 class HeuristicPlanBuilder:
     """Deterministic stand-in for hypopg until Phase 4 injects real plans.
 
@@ -200,11 +289,11 @@ class BeamSearch:
             )
 
         states = [_State(candidates=(), log_latency=baseline_log, latency_ms=baseline_ms, write_penalty=0.0)]
-        seen_states: dict[tuple[str, ...], _State] = {}
+        seen_states: dict[str, _State] = {}
         trace: list[str] = []
 
         for depth in range(1, self._config.max_indexes + 1):
-            expanded: dict[tuple[str, ...], _State] = {}
+            expanded: dict[str, _State] = {}
             for state in states:
                 used_tables = {candidate.table.qualified_name for candidate in state.candidates}
                 used_ids = {candidate.id for candidate in state.candidates}
@@ -216,7 +305,7 @@ class BeamSearch:
                     configuration = state.candidates + (candidate,)
                     if not self._within_budget(configuration, catalog):
                         continue
-                    key = tuple(sorted(item.id for item in configuration))
+                    key = configuration_key(configuration)
                     if key in expanded:
                         continue
                     graph = self._builder.build(base_graph, configuration)
@@ -264,18 +353,9 @@ class BeamSearch:
         configuration: Sequence[IndexCandidate],
         catalog: SchemaCatalog | None,
     ) -> bool:
-        if catalog is None:
-            return True
-        totals: dict[tuple[str, str], int] = defaultdict(int)
-        for candidate in configuration:
-            totals[(candidate.table.schema, candidate.table.name)] += candidate.storage_bytes
-        for (schema_name, table_name), total in totals.items():
-            table = catalog.table(schema_name, table_name)
-            if table is None or table.effective_bytes <= 0:
-                continue
-            if total > table.effective_bytes * self._config.storage_budget_ratio:
-                return False
-        return True
+        return within_storage_budget(
+            configuration, catalog, self._config.storage_budget_ratio
+        )
 
     def _order(self, states: Sequence[_State]) -> list[_State]:
         ordered = sorted(states, key=lambda state: state.latency_ms)

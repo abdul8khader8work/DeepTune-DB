@@ -83,6 +83,22 @@ class BeamResult:
 
 
 @dataclass(frozen=True)
+class PlanRequest:
+    """A configuration whose hypothetical QEP the caller must fetch.
+
+    Patch 2 Task 3: the beam search must score the *post-index* plan that
+    PostgreSQL would actually choose, not the baseline plan with a hand-made
+    discount. ``create_sqls`` is everything that has to be injected through
+    ``hypopg`` before the plan is explained; ``key`` is the id the caller sends
+    back with the resulting QEP.
+    """
+
+    key: str
+    create_sqls: tuple[str, ...]
+    depth: int
+
+
+@dataclass(frozen=True)
 class NodeAttention:
     node_index: int
     operator: str

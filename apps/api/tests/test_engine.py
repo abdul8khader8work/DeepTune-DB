@@ -48,7 +48,7 @@ def test_real_checkpoint_loads_and_describes_the_model() -> None:
     assert bundle.available is True
     status = bundle.status
     assert status.backend == "gnn"
-    assert status.layers == 3
+    assert status.layers == 2
     assert status.heads == 4
     assert status.hidden_dim == 128
     assert status.parameters and status.parameters > 0

@@ -17,13 +17,17 @@ def _graph(explain_payload: dict[str, object]):
     return plan_to_graph(explain_payload).data
 
 
-def test_architecture_is_exactly_three_gatv2_layers() -> None:
+def test_architecture_is_two_gatv2_layers_with_residual() -> None:
     model = Gatv2CostModel()
-    assert len(model.layers) == 3
+    assert len(model.layers) == 2
     assert model.hidden_dim == 128
-    assert [layer.heads for layer in model.layers] == [4, 4, 1]
+    assert [layer.heads for layer in model.layers] == [4, 4]
     assert model.head[0].out_features == 64
     assert model.head[-1].out_features == 1
+    # Residual projection maps raw node features into the attention width.
+    assert isinstance(model.skip_proj, torch.nn.Linear)
+    assert model.skip_proj.in_features == model.node_dim
+    assert model.skip_proj.out_features == model.hidden_dim
 
 
 def test_forward_returns_one_prediction_per_graph(explain_payload: dict[str, object]) -> None:
@@ -42,10 +46,10 @@ def test_attention_weights_normalise_per_target_node(explain_payload: dict[str, 
     batch = Batch.from_data_list([_graph(explain_payload), _graph(explain_payload)])
     with torch.no_grad():
         _, attentions = model(batch, return_attention=True)
-    assert len(attentions) == 3
+    assert len(attentions) == 2
     edge_index, alpha = attentions[-1]
     totals = torch.zeros(int(batch.num_nodes))
-    totals.index_add_(0, edge_index[1], alpha.view(-1))
+    totals.index_add_(0, edge_index[1], alpha.mean(dim=-1).view(-1))
     attended = totals > 0
     assert attended.any()
     assert torch.allclose(totals[attended], torch.ones_like(totals[attended]), atol=1e-5)
@@ -87,6 +91,6 @@ def test_checkpoint_round_trip(tmp_path: Path, explain_payload: dict[str, object
 
 def test_invalid_architecture_is_rejected() -> None:
     with pytest.raises(ValueError):
-        Gatv2CostModel(layers=2)
+        Gatv2CostModel(layers=3)
     with pytest.raises(ValueError):
         Gatv2CostModel(hidden_dim=130, heads=4)

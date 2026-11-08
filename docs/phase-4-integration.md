@@ -34,7 +34,7 @@ Monaco SQL ──▶ POST /queries/analyze ──▶ sqlglot guard ──▶ EXP
 `apps/api/src/services/engine.py` owns the single `PlanOptimizer` instance.
 
 - Loaded **once** in the FastAPI `lifespan`, via `asyncio.to_thread(load_engine, settings)`, so the
-  126,210-parameter checkpoint never blocks the event loop and is **never** loaded in a route.
+  96,514-parameter checkpoint never blocks the event loop and is **never** loaded in a route.
 - The engine is not a published wheel, so the loader appends `packages/ml-engine/src` to `sys.path`
   and imports the `inference` facade. `ML_ENGINE_SRC` / `ML_CHECKPOINT_PATH` override the layout.
 - The loader is total: `ML_ENABLED=false`, a missing source tree, a missing checkpoint, or a corrupt
@@ -68,14 +68,48 @@ the engine stores child → parent (message passing flows upward), the API store
 
 | Stage | Progress | Work |
 |---|---|---|
-| `parsing` | 5–30 % | sqlglot guard, target connect, `EXPLAIN (ANALYZE)` in a rolled-back transaction |
-| `gnn_inference` | 60 % | `asyncio.to_thread(ml.optimize, ...)`: symbolic pruning + beam search |
-| `hypopg_validation` | 80 % | inject each candidate into the shadow DB, keep the fastest plan |
+| `parsing` | 5–15 % | sqlglot guard, ephemeral superuser `VACUUM (ANALYZE, SKIP_LOCKED)` on its own short-lived connection |
+| `parsing` | 15–30 % | target connect, `EXPLAIN (ANALYZE)` median-of-5 in rolled-back transactions |
+| `gnn_inference` | 55 % | enumerate the reachable index configurations and fetch each post-`hypopg` QEP |
+| `gnn_inference` | 60 % | `asyncio.to_thread(ml.optimize, ...)`: symbolic pruning + beam search over those plans |
+| `hypopg_validation` | 80 % | inject each *recommended* candidate into the shadow DB, keep the fastest plan |
 | `gnn_inference` | 95 % | assemble explainability, recommendations, and the final `AnalysisResult` |
 
 Every engine fault is caught at the stage boundary and downgraded to `_heuristic_stage`, which is
 the Phase 2 candidate generator. A run therefore always completes with either a GNN plan or an
 honest heuristic plan; `AnalysisResult.engine` tells the UI which one it got.
+
+## 2a. Patch 2: the neuro-symbolic loop
+
+Patch 2 Task 3 closed the biggest architectural gap: the beam used to score the *baseline* graph
+with a hand-made discount instead of the plan PostgreSQL would choose. The loop is now:
+
+```
+PlanOptimizer.plan_requests()      engine, no DB access
+        │  configuration keys + CREATE INDEX SQL, depth-1 first
+        ▼
+services/hypothetical.py           API, one shadow connection
+        │  BEGIN; SET LOCAL statement_timeout; hypopg_create_index(...);
+        │  EXPLAIN (ANALYZE, FORMAT JSON); hypopg_drop_index(...); ROLLBACK
+        ▼
+PlanOptimizer.optimize(candidate_qeps=...)   engine, torch.no_grad()
+        │  _HypotheticalPlanBuilder: key -> parsed PlanGraph
+        ▼
+BeamSearch                         symbols + GNN on real post-index plans
+```
+
+- The engine still never imports a database driver: the API hands it raw EXPLAIN JSON, keyed by the
+  same `configuration_key` the beam uses.
+- `hypopg` indexes live in backend memory, not in the catalog, so a leaked id survives the rollback.
+  The drop runs in the same transaction and a failed drop falls back to `hypopg_reset()`;
+  `tests/test_hypothetical.py` asserts one drop per candidate.
+- Prefetch depth is bounded by `HYPOPG_PREFETCH_LIMIT` (48): all single-index configurations first,
+  then pairs. A configuration the prefetcher did not reach — or one `hypopg` rejected — is rebuilt by
+  `HeuristicPlanBuilder`, and the run trace reports how many fell back.
+- `CONCURRENTLY` is stripped with sqlglot before the statement reaches `hypopg` (never regex-edited),
+  because `hypopg_create_index` cannot plan a concurrent build.
+- With no shadow database configured the whole step is skipped and the loop degrades to the offline
+  builder, which is what the local demo (no Docker, no `hypopg`) exercises.
 
 ## 3. Calibration found during integration
 
@@ -210,11 +244,11 @@ The morph is now a Framer Motion value:
 
 | Command | Result |
 |---|---|
-| `apps/api`: `python -m pytest` | **68 passed** |
-| `packages/ml-engine`: `python -m pytest` | **79 passed** |
+| `apps/api`: `python -m pytest` | **80 passed** |
+| `packages/ml-engine`: `python -m pytest` | **85 passed** |
 | `apps/web`: `npm run typecheck` | Clean (strict, `noUncheckedIndexedAccess`) |
 | `apps/web`: `npm run build` | Compiled successfully; `/` at 149 kB |
-| Engine smoke (no DB) | runtime `onnx`, 126,210 params, layers 3, heads 4; 3 symbolic candidates; 1 recommendation `idx_orders_status_customer_id`; 1.31× predicted; optimized DAG + edges + trace correct; near-uniform attention flagged |
+| Engine smoke (no DB) | runtime `onnx`, 96,514 params, layers 2 + residual, heads 4; 3 symbolic candidates; 1 recommendation `idx_orders_status_customer_id`; 1.31× predicted; optimized DAG + edges + trace correct; near-uniform attention flagged |
 
 New API tests: `tests/test_ml_bridge.py` (graph round-trip, edge flip, attention fallback, id
 namespacing, metric scaling), `tests/test_engine.py` (disabled / missing source / missing

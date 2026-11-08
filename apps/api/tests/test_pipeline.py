@@ -1,6 +1,5 @@
-"""Pipeline fallback: a dead shadow DB must never wipe the baseline DAG."""
+"""Pipeline fallback: maintenance and shadow failures never wipe the run."""
 
-import asyncpg
 import pytest
 
 from src.core.config import Settings
@@ -54,47 +53,59 @@ async def test_shadow_unavailable_falls_back_to_baseline(
     assert metrics == METRICS
 
 
-class FakeTargetConnection:
-    def __init__(self, error: Exception | None = None) -> None:
-        self.sql: list[str] = []
-        self.error = error
-
-    async def execute(self, sql: str) -> None:
-        self.sql.append(sql)
-        if self.error is not None:
-            raise self.error
-
-
-async def test_vacuum_analyze_is_attempted_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("TARGET_ALLOW_MAINTENANCE", raising=False)
-    settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    conn = FakeTargetConnection()
-
-    assert settings.target_allow_maintenance is True
-    await pipeline._refresh_stats(conn, settings)  # type: ignore[arg-type]
-    assert conn.sql == ["VACUUM ANALYZE"]
-
-
-async def test_vacuum_analyze_privilege_error_is_not_fatal(
-    settings: Settings,
+async def test_heuristic_stage_reports_null_attention(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
-    conn = FakeTargetConnection(asyncpg.PostgresError("must be owner of table"))
+    """Patch 2 Task 1: no GATv2 forward means no attention, not 0.0."""
 
-    # A read-only target role must degrade, not fail the analysis run.
-    await pipeline._refresh_stats(conn, settings)  # type: ignore[arg-type]
-    assert conn.sql == ["VACUUM ANALYZE"]
+    validated = pipeline.validate_sql("SELECT * FROM orders", 10000)
+    dag = pipeline.build_dag(
+        {
+            "Node Type": "Seq Scan",
+            "Relation Name": "orders",
+            "Total Cost": 80.0,
+            "Plan Rows": 1000,
+        }
+    )
+    stage = pipeline._heuristic_stage(
+        validated,
+        [],
+        pipeline.QueryAnalysisRequest(connection_id="c", sql_query="SELECT 1"),
+        dag,
+        80.0,
+        1.2,
+    )
+    assert [node.gnn_attention_score for node in stage.original_nodes] == [None]
+    assert [node.gnn_attention_score for node in stage.optimized_nodes] == [None]
 
 
-async def test_vacuum_analyze_timeout_is_not_fatal(settings: Settings) -> None:
-    conn = FakeTargetConnection(TimeoutError("command timeout"))
+async def test_maintenance_failure_never_aborts_the_run(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    async def explode(*args: object, **kwargs: object) -> None:
+        raise OSError("superuser unreachable")
 
-    await pipeline._refresh_stats(conn, settings)  # type: ignore[arg-type]
-    assert conn.sql == ["VACUUM ANALYZE"]
+    monkeypatch.setattr(pipeline, "refresh_table_statistics", explode)
+    stored = pipeline.StoredConnection(
+        dsn="postgresql://query_optimizer:secret@localhost:5432/shop"
+    )
+
+    await pipeline._refresh_target_statistics(stored, settings)  # must not raise
 
 
-async def test_maintenance_can_be_switched_off(settings: Settings) -> None:
-    conn = FakeTargetConnection()
+async def test_maintenance_can_be_switched_off(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    calls: list[object] = []
+
+    async def spy(*args: object, **kwargs: object) -> None:
+        calls.append(args)
+
+    monkeypatch.setattr(pipeline, "refresh_table_statistics", spy)
     disabled = settings.model_copy(update={"target_allow_maintenance": False})
 
-    await pipeline._refresh_stats(conn, disabled)  # type: ignore[arg-type]
-    assert conn.sql == []
+    await pipeline._refresh_target_statistics(
+        pipeline.StoredConnection(dsn="postgresql://u:p@localhost:5432/shop"),
+        disabled,
+    )
+    assert calls == []

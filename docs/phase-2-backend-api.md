@@ -69,18 +69,24 @@ still works; the health endpoint reports which store is active.
 - The data directory is a `tmpfs`, so hypothetical indexes never persist.
 - `infra/postgres/demo.sql` seeds an identical schema (20k customers, 5k products, 120k orders)
   in both the target and shadow DBs and runs `VACUUM ANALYZE` once at init.
-- `TARGET_ALLOW_MAINTENANCE` defaults to `true` (Patch 2): the pipeline attempts `VACUUM ANALYZE`
-  before measuring the baseline, because stale planner statistics are the most common reason a
-  correct query gets a bad plan. The read-only target role cannot `VACUUM` (it needs table
-  ownership), so a refusal or timeout is logged as
-  `VACUUM ANALYZE not applied (…)` and the run continues. Set the flag to `false` to skip the
-  attempt entirely.
+- `TARGET_ALLOW_MAINTENANCE` defaults to `true` (Patch 2): before measuring the baseline the
+  pipeline opens a **separate, short-lived** connection as the table owner and runs
+  `VACUUM (ANALYZE, SKIP_LOCKED)`, because stale planner statistics are the most common reason a
+  correct query gets a bad plan. The read-only `query_optimizer` role is never granted elevated
+  rights and the superuser connection is closed before any user SQL runs.
+  - `TARGET_SUPERUSER_DSN` (full DSN) wins over `TARGET_SUPERUSER_PASSWORD` +
+    `TARGET_SUPERUSER_USER` (default `postgres`); with neither set the refresh is skipped and
+    logged.
+  - The command timeout is applied through the connection's `statement_timeout` server setting:
+    `SET LOCAL` needs a transaction block and PostgreSQL refuses to run `VACUUM` inside one.
+  - Every failure (wrong password, locked table, timeout) is logged as
+    `Statistics refresh failed (…)` and the run continues with the statistics it already has.
 
 ### 6. Analysis pipeline
 
 1. Validate the SQL with sqlglot (single read-only `SELECT`).
 2. Load the encrypted DSN, connect with the stored SSL mode.
-3. Attempt `VACUUM ANALYZE` (best effort; see above), then capture the baseline
+3. Refresh statistics as the owner (best effort; see above), then capture the baseline
    `EXPLAIN (ANALYZE, FORMAT JSON)` and introspect the schema in one query.
 4. Convert the plan into API DAG nodes/edges; attention scores are heuristic in Phase 2.
 5. Derive candidate indexes from equality/join/range/ordering predicates.

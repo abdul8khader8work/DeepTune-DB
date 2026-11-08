@@ -84,19 +84,23 @@ See `docs/phase-2-backend-api.md` for the endpoint table and reviewer checklist.
 
 - **Plan parser:** PostgreSQL `EXPLAIN (FORMAT JSON)` becomes a PyG graph with operator one-hot
   features, log-scaled rows/cost/size, selectivity, edge cardinality, and join-type embeddings.
-- **GATv2 cost model:** exactly three layers (128 wide, heads 4 → 4 → 1), global attention pooling,
-  and a 128 → 64 → 1 head. It predicts `log1p(execution_time_ms)` and exposes per-node attention.
+- **GATv2 cost model:** two attention layers (128 wide, 4 → 4 heads) plus a residual skip that
+  carries the raw node features around both layers, global attention pooling, and a 128 → 64 → 1
+  head. It predicts `log1p(execution_time_ms)` and exposes per-node attention.
 - **Symbolic pruning:** boolean/JSONB/low-distinct columns, duplicate indexes, left-prefix
   violations, the 15% storage budget, and the 3-index write-heavy cap are enforced before the GNN.
-- **Beam search:** width 5, at most 3 indexes, one per table, ranked by predicted latency with a
-  5% tie-break on write amplification. Only `CREATE INDEX CONCURRENTLY` text is emitted.
+- **Beam search:** width 10, at most 3 indexes, one per table, ranked by predicted latency with a
+  5% tie-break on write amplification. Every candidate configuration is planned through `hypopg`
+  first, so the GNN scores the post-index QEP rather than the baseline. Only
+  `CREATE INDEX CONCURRENTLY` text is emitted.
 - **Training:** Huber loss, AdamW, cosine warm restarts, edge dropout, and the 1–20 / 21–50 / 51+
   curriculum. Validation uses MAE, RMSE, Spearman ρ, and median Q-error — never accuracy.
-- **Measured result:** held-out synthetic plans reach **ρ = 0.96** on the mixed test split and
-  **ρ = 0.956** on tier 3 (MAE 90 ms); every tier clears the ρ > 0.85 target. Weights stay git-ignored.
-- **ONNX inference:** `make ml-export` writes `weights/demo-final.onnx` (opset 17, 538 KB) after
+- **Measured result:** the shipped residual checkpoint (96,514 parameters) reaches **ρ = 0.961**,
+  MAE 141 ms, and median Q-error 1.11 on the held-out synthetic test split. Weights stay
+  git-ignored.
+- **ONNX inference:** `make ml-export` writes `weights/demo-final.onnx` (opset 17, 400 KB) after
   proving parity against the PyTorch forward; the API then scores plans through onnxruntime in
-  **0.38 ms** median per plan instead of 3.8 ms. The export is a hand-written, shape-polymorphic
+  **0.28 ms** median per plan instead of 3.8 ms. The export is a hand-written, shape-polymorphic
   mirror of the GATv2 forward because a naive trace silently bakes the graph size in.
 
 See `docs/phase-3-ml-engine.md` for the graph contract, pruning table, and full metrics.

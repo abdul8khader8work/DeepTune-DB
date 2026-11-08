@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 import torch
 
@@ -36,6 +36,9 @@ from search.beam import (
     GraphScorer,
     HeuristicPlanBuilder,
     ModelScorer,
+    PlanBuilder,
+    configuration_key,
+    enumerate_configurations,
 )
 from search.symbolic import generate_candidates
 from search.types import (
@@ -43,6 +46,7 @@ from search.types import (
     IndexCandidate,
     NodeAttention,
     OptimizationReport,
+    PlanRequest,
     RankedConfiguration,
     Recommendation,
 )
@@ -72,9 +76,6 @@ class _OnnxFirstScorer:
         return self._onnx.predict_log_latency(graph)
 
 
-CandidatePlanBuilder = Callable[[PlanGraph, Sequence[IndexCandidate]], PlanGraph]
-
-
 class _CallablePlanBuilder:
     """Adapts a Phase 4 callable (hypopg) to the PlanBuilder protocol."""
 
@@ -85,6 +86,39 @@ class _CallablePlanBuilder:
         self, base: PlanGraph, configuration: Sequence[IndexCandidate]
     ) -> PlanGraph:
         return self._build_fn(base, configuration)
+
+
+class _HypotheticalPlanBuilder:
+    """Scores the *real* plan hypopg produced for a configuration (Task 3).
+
+    ``plans`` maps :func:`search.beam.configuration_key` to the parsed QEP
+    PostgreSQL returned with those hypothetical indexes injected. A configuration
+    the prefetcher could not reach (the prefetch budget ran out, hypopg rejected
+    the index, or the payload did not parse) is rebuilt by the deterministic
+    stand-in instead of being dropped, and the miss is counted so the report can
+    disclose it.
+    """
+
+    def __init__(
+        self,
+        plans: Mapping[str, PlanGraph],
+        fallback: PlanBuilder,
+    ) -> None:
+        self._plans = dict(plans)
+        self._fallback = fallback
+        self.scored: set[str] = set()
+        self.misses: set[str] = set()
+
+    def build(
+        self, base: PlanGraph, configuration: Sequence[IndexCandidate]
+    ) -> PlanGraph:
+        key = configuration_key(configuration)
+        graph = self._plans.get(key)
+        if graph is None:
+            self.misses.add(key)
+            return self._fallback.build(base, configuration)
+        self.scored.add(key)
+        return graph
 
 
 @dataclass(frozen=True)
@@ -173,6 +207,38 @@ class PlanOptimizer:
     def metadata(self) -> dict[str, object]:
         return dict(self._metadata)
 
+    def plan_requests(
+        self,
+        sql: str,
+        catalog: SchemaCatalog,
+        goal: str = "balanced",
+        limit: int | None = None,
+    ) -> tuple[PlanRequest, ...]:
+        """Configurations whose hypothetical QEPs the caller should prefetch.
+
+        Patch 2 Task 3: the engine cannot talk to PostgreSQL, so the API fetches
+        these plans through hypopg first and hands them back to
+        :meth:`optimize` as ``candidate_qeps``. Depth-1 configurations come
+        first so a small prefetch budget still covers every single-index
+        candidate.
+        """
+        symbolic = generate_candidates(sql, catalog, goal=goal)
+        configurations = enumerate_configurations(
+            symbolic.candidates,
+            catalog,
+            max_indexes=self._config.max_indexes,
+            storage_budget_ratio=self._config.storage_budget_ratio,
+            limit=limit,
+        )
+        return tuple(
+            PlanRequest(
+                key=configuration_key(configuration),
+                create_sqls=tuple(candidate.create_sql for candidate in configuration),
+                depth=len(configuration),
+            )
+            for configuration in configurations
+        )
+
     def optimize(
         self,
         sql: str,
@@ -180,15 +246,27 @@ class PlanOptimizer:
         catalog: SchemaCatalog,
         goal: str = "balanced",
         candidate_plan_builder: CandidatePlanBuilder | None = None,
+        candidate_qeps: Mapping[str, object] | None = None,
     ) -> OptimizationReport:
-        """Run symbolic pruning, beam search, and explainability extraction."""
+        """Run symbolic pruning, beam search, and explainability extraction.
+
+        ``candidate_qeps`` holds the post-``hypopg`` plans fetched by the API,
+        keyed by :func:`search.beam.configuration_key`. When present the beam
+        scores those real plans; otherwise it falls back to the offline builder.
+        """
         base_graph = plan_to_graph(plan, catalog=catalog)
         symbolic = generate_candidates(sql, catalog, goal=goal)
-        builder = (
-            _CallablePlanBuilder(candidate_plan_builder)
-            if candidate_plan_builder is not None
-            else self._default_builder
-        )
+        hypothetical: _HypotheticalPlanBuilder | None = None
+        if candidate_qeps:
+            parsed = self._parse_qeps(candidate_qeps, catalog)
+            if parsed:
+                hypothetical = _HypotheticalPlanBuilder(parsed, self._default_builder)
+        if hypothetical is not None:
+            builder: PlanBuilder = hypothetical
+        elif candidate_plan_builder is not None:
+            builder = _CallablePlanBuilder(candidate_plan_builder)
+        else:
+            builder = self._default_builder
         search = BeamSearch(
             self._scorer,
             plan_builder=builder,
@@ -199,7 +277,17 @@ class PlanOptimizer:
                 storage_budget_ratio=self._config.storage_budget_ratio,
             ),
         )
-        result = search.search(base_graph, symbolic.candidates, catalog)
+        # Task 3 constraint: never build an autograd graph while scoring
+        # thousands of candidate plans.
+        with torch.no_grad():
+            result = search.search(base_graph, symbolic.candidates, catalog)
+        trace = result.trace
+        if hypothetical is not None:
+            trace = trace + (
+                f"hypopg: scored {len(hypothetical.scored)} hypothetical plan(s); "
+                f"{len(hypothetical.misses)} configuration(s) fell back to the "
+                f"offline builder",
+            )
         best = result.configurations[0] if result.configurations else None
 
         if best is not None:
@@ -247,7 +335,7 @@ class PlanOptimizer:
             recommendations=tuple(recommendations),
             configurations=result.configurations,
             attention=attention,
-            trace=result.trace,
+            trace=trace,
             rejected=symbolic.rejected,
             tables=symbolic.tables,
             symbolic_candidate_count=len(symbolic.candidates),
@@ -261,6 +349,7 @@ class PlanOptimizer:
         catalog: SchemaCatalog,
         goal: str = "balanced",
         candidate_plan_builder: CandidatePlanBuilder | None = None,
+        candidate_qeps: Mapping[str, object] | None = None,
     ) -> tuple[RankedConfiguration, ...]:
         """Expose the ranked configurations without building recommendations."""
         report = self.optimize(
@@ -269,8 +358,26 @@ class PlanOptimizer:
             catalog,
             goal=goal,
             candidate_plan_builder=candidate_plan_builder,
+            candidate_qeps=candidate_qeps,
         )
         return report.configurations
+
+    def _parse_qeps(
+        self, qeps: Mapping[str, object], catalog: SchemaCatalog
+    ) -> dict[str, PlanGraph]:
+        """Turn the API's EXPLAIN payloads into PyG graphs, skipping bad ones."""
+        graphs: dict[str, PlanGraph] = {}
+        for key, payload in qeps.items():
+            try:
+                graphs[key] = plan_to_graph(payload, catalog=catalog)
+            except Exception as exc:  # noqa: BLE001 - one bad QEP is not fatal
+                logger.warning(
+                    "Hypothetical plan %s could not be parsed (%s: %s); skipping it",
+                    key,
+                    exc.__class__.__name__,
+                    exc,
+                )
+        return graphs
 
     def _attention(self, graph: PlanGraph) -> tuple[NodeAttention, ...]:
         edge_index, alpha = self._attention_weights(graph)

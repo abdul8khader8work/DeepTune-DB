@@ -131,7 +131,7 @@ export function toFlow(nodes: DAGNode[], edges: DAGEdge[]): PlanView {
         attention: node.gnn_attention_score,
         kind: kindOf(node.operation_type),
         bottleneck:
-          node.gnn_attention_score >= 0.6 ||
+          (node.gnn_attention_score ?? 0) >= 0.6 ||
           (maxCost > 0 && node.estimated_cost >= maxCost * 0.9),
       },
     };

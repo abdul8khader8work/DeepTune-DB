@@ -11,7 +11,8 @@ export type QONodeMetrics = {
   cost: number;
   rows: number;
   selectivity: number;
-  attention: number;
+  /** Null when the API ran the heuristic fallback (no GATv2 forward pass). */
+  attention: number | null;
   kind: PlanNodeKind;
   bottleneck: boolean;
 };

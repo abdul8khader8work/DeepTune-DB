@@ -81,11 +81,11 @@ EDGE_FEATURE_DIM = EDGE_NUMERIC_FEATURES + len(JOIN_TYPES)
 MODEL_HIDDEN_DIM = 128
 MODEL_HEADS = 4
 MODEL_DROPOUT = 0.2
-MODEL_LAYERS = 3
+MODEL_LAYERS = 2
 
 TARGET_LOG_BASE = math.e
 
-BEAM_WIDTH = 5
+BEAM_WIDTH = 10
 MAX_INDEXES = 3
 TIE_MARGIN = 0.05
 # The blueprint caps index storage at <15% of the table. A btree entry costs

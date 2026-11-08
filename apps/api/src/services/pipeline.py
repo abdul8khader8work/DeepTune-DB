@@ -16,7 +16,7 @@ from src.core.config import Settings
 from src.core.errors import ApiError, not_found, unprocessable
 from src.db.metadata import ConnectionStore
 from src.db.shadow import ShadowUnavailable, connect_shadow, validate_index
-from src.db.target import connect_target
+from src.db.target import StoredConnection, connect_target
 from src.schemas.analysis import (
     AnalysisResult,
     AttentionHotspot,
@@ -26,11 +26,14 @@ from src.schemas.analysis import (
     QueryAnalysisRequest,
     RejectedCandidate,
 )
+from src.schemas.connections import TableSchema
 from src.services import ml
 from src.services.dag import Dag, build_dag
 from src.services.engine import EngineBundle
 from src.services.explain import explain_steady_state
+from src.services.hypothetical import prefetch_configurations
 from src.services.introspection import fetch_schema
+from src.services.maintenance import refresh_table_statistics
 from src.services.recommender import recommend_indexes
 from src.services.runs import RecommendationState, RunRegistry
 from src.services.sql_guard import SqlValidationError, validate_sql
@@ -67,27 +70,58 @@ def _metrics(cost: float, time_ms: float) -> dict[str, float]:
     return {"cost": round(cost, 2), "time_ms": round(time_ms, 3)}
 
 
-async def _refresh_stats(conn: asyncpg.Connection, settings: Settings) -> None:
-    """Best-effort VACUUM ANALYZE before the baseline is measured.
+async def _refresh_target_statistics(
+    stored: StoredConnection, settings: Settings
+) -> None:
+    """Patch 2 Task 2: ANALYZE as the owner, never as ``query_optimizer``.
 
-    Patch 2 enables the attempt by default: stale planner statistics are the
-    most common reason a correct query gets a bad plan, and the median-of-5
-    baseline would faithfully measure that bad plan. ``VACUUM`` requires table
-    ownership, and the target role is normally SELECT-only, so a refusal is
-    logged and the run continues — the optimizer never depends on rights it is
-    not supposed to have.
+    A read-only target role cannot update ``pg_statistic``, and stale statistics
+    make both the planner and hypopg mis-price indexes. The maintenance service
+    opens an ephemeral superuser connection, runs ``VACUUM (ANALYZE,
+    SKIP_LOCKED)``, and closes it before any user SQL is executed. Every failure
+    degrades to a warning: a demo must still optimize without elevated rights.
     """
     if not settings.target_allow_maintenance:
-        logger.info("Skipping VACUUM ANALYZE on the read-only target database")
+        logger.info("Pre-flight ANALYZE is disabled (TARGET_ALLOW_MAINTENANCE=false)")
         return
     try:
-        await conn.execute("VACUUM ANALYZE")
-        logger.info("VACUUM ANALYZE refreshed target statistics")
-    except (asyncpg.PostgresError, asyncio.TimeoutError, OSError) as exc:
-        logger.info(
-            "VACUUM ANALYZE not applied (%s); the target role needs table ownership",
+        result = await refresh_table_statistics(
+            stored.dsn,
+            settings.superuser_password,
+            override_dsn=settings.superuser_dsn,
+            superuser_user=settings.target_superuser_user,
+            timeout_ms=settings.maintenance_timeout_ms,
+            connect_timeout_s=settings.target_connect_timeout_s,
+        )
+    except Exception as exc:  # noqa: BLE001 - maintenance must never abort a run
+        logger.warning(
+            "Failed to refresh stats, proceeding with potentially stale statistics: %s",
             exc.__class__.__name__,
         )
+        return
+
+    if result.skipped:
+        logger.warning(
+            "Statistics refresh skipped (%s); proceeding with potentially stale "
+            "statistics",
+            result.error,
+        )
+    elif result.error:
+        logger.warning(
+            "Failed to refresh stats, proceeding with potentially stale statistics: %s",
+            result.error,
+        )
+    else:
+        logger.info("ANALYZE refreshed target statistics via an ephemeral owner session")
+
+
+def _without_attention(nodes: list[DAGNode]) -> list[DAGNode]:
+    """Heuristic fallback: no GATv2 forward ran, so attention is ``None``.
+
+    Patch 2 Task 1: the field became ``Optional`` so the UI can tell "no model
+    scored this plan" apart from "the model scored this node at zero".
+    """
+    return [node.model_copy(update={"gnn_attention_score": None}) for node in nodes]
 
 
 def _heuristic_stage(
@@ -100,8 +134,8 @@ def _heuristic_stage(
 ) -> Stage:
     return Stage(
         recommendations=recommend_indexes(validated, schema, request.optimization_goal),
-        original_nodes=dag.nodes,
-        optimized_nodes=dag.nodes,
+        original_nodes=_without_attention(dag.nodes),
+        optimized_nodes=_without_attention(dag.nodes),
         edges=dag.edges,
         optimized_metrics=_metrics(baseline_cost, baseline_ms),
         engine="heuristic",
@@ -118,6 +152,70 @@ def _attention_list(outcome: ml.MlOutcome) -> list[AttentionHotspot]:
         )
         for item in outcome.attention
     ]
+
+
+async def _prefetch_hypothetical_plans(
+    run_id: str,
+    sql_query: str,
+    schema: list[TableSchema],
+    goal: str,
+    deps: PipelineDeps,
+) -> dict[str, dict[str, object]]:
+    """Task 3: hand the GNN the plan PostgreSQL would pick after the index.
+
+    The engine enumerates every configuration it can reach; this fetches the
+    matching QEPs through ``hypopg`` *before* the beam runs, so the beam scores
+    post-index plans instead of the baseline with a heuristic discount. A
+    missing shadow database yields an empty cache and the beam falls back to its
+    offline plan builder.
+    """
+    settings = deps.settings
+    if not settings.shadow_dsn or not settings.shadow_validate:
+        return {}
+    if settings.hypopg_prefetch_limit <= 0:
+        return {}
+    try:
+        requests = await asyncio.to_thread(
+            deps.engine.optimizer.plan_requests,
+            sql_query,
+            ml.to_catalog(schema),
+            goal,
+            settings.hypopg_prefetch_limit,
+        )
+    except Exception:  # noqa: BLE001 - prefetch is an optimisation, not a contract
+        logger.exception("Could not enumerate hypothetical plans for run %s", run_id)
+        return {}
+    if not requests:
+        return {}
+
+    await deps.runs.update(
+        run_id,
+        "gnn_inference",
+        55,
+        f"Fetching {len(requests)} hypothetical plans via hypopg…",
+    )
+    try:
+        conn = await connect_shadow(settings)
+    except ShadowUnavailable as exc:
+        logger.info("Hypothetical plans unavailable for run %s: %s", run_id, exc)
+        return {}
+    try:
+        plans = await prefetch_configurations(
+            conn,
+            sql_query,
+            requests,
+            timeout_ms=settings.explain_timeout_ms,
+            limit=settings.hypopg_prefetch_limit,
+        )
+    finally:
+        await conn.close()
+    logger.info(
+        "Hypopg prefetch for run %s: %d/%d post-index plans cached",
+        run_id,
+        len(plans),
+        len(requests),
+    )
+    return plans
 
 
 async def _engine_stage(
@@ -140,6 +238,10 @@ async def _engine_stage(
     if not deps.engine.available:
         return fallback
 
+    candidate_qeps = await _prefetch_hypothetical_plans(
+        run_id, validated.sql, schema, request.optimization_goal, deps
+    )
+
     await deps.runs.update(
         run_id,
         "gnn_inference",
@@ -158,6 +260,7 @@ async def _engine_stage(
             dag.edges,
             baseline.execution_time_ms,
             run_id,
+            candidate_qeps,
         )
     except Exception:  # noqa: BLE001 - a model fault must not kill the run
         logger.exception("Engine inference failed for run %s; using heuristics", run_id)
@@ -212,10 +315,11 @@ async def _execute(
     if stored is None:
         raise not_found("CONNECTION_NOT_FOUND", "Unknown connection_id.")
 
-    await runs.update(run_id, "parsing", 15, "Connecting to the target database…")
+    await runs.update(run_id, "parsing", 15, "Refreshing planner statistics…")
+    await _refresh_target_statistics(stored, settings)
+
     conn = await connect_target(stored, settings)
     try:
-        await _refresh_stats(conn, settings)
         await runs.update(
             run_id,
             "parsing",

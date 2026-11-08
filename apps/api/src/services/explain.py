@@ -45,6 +45,22 @@ def _decode_payload(raw: object) -> list[dict]:
     return payload
 
 
+def result_from_payload(raw: object) -> ExplainResult:
+    """Build an :class:`ExplainResult` from a raw ``EXPLAIN`` JSON payload."""
+    payload = _decode_payload(raw)
+    top = payload[0]
+    plan = top.get("Plan")
+    if not isinstance(plan, dict):
+        raise ValueError("EXPLAIN payload has no Plan object")
+    return ExplainResult(
+        plan=plan,
+        planning_time_ms=float(top.get("Planning Time", 0.0)),
+        execution_time_ms=float(top.get("Execution Time", 0.0)),
+        total_cost=float(plan.get("Total Cost", 0.0)),
+        root_rows=int(plan.get("Actual Rows", plan.get("Plan Rows", 0)) or 0),
+    )
+
+
 async def explain_analyze(
     conn: asyncpg.Connection, sql: str, timeout_ms: int
 ) -> ExplainResult:
@@ -63,19 +79,7 @@ async def explain_analyze(
 
     if row is None:
         raise ValueError("EXPLAIN returned no rows")
-    payload = _decode_payload(row[0])
-    top = payload[0]
-    plan = top.get("Plan")
-    if not isinstance(plan, dict):
-        raise ValueError("EXPLAIN payload has no Plan object")
-
-    return ExplainResult(
-        plan=plan,
-        planning_time_ms=float(top.get("Planning Time", 0.0)),
-        execution_time_ms=float(top.get("Execution Time", 0.0)),
-        total_cost=float(plan.get("Total Cost", 0.0)),
-        root_rows=int(plan.get("Actual Rows", plan.get("Plan Rows", 0)) or 0),
-    )
+    return result_from_payload(row[0])
 
 
 def _select_median(

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from src.schemas.analysis import DAGEdge, DAGNode, IndexRecommendation
 from src.schemas.connections import TableSchema
@@ -91,7 +91,9 @@ def graph_to_nodes(graph: Any) -> list[DAGNode]:
                 estimated_cost=round(cost, 2),
                 estimated_rows=max(0, int(round(rows))),
                 actual_time_ms=None,
-                gnn_attention_score=0.0,
+                # Patch 2 Task 1: ``None`` until ``apply_attention`` overlays a
+                # real GATv2 weight; the frontend treats null as "no signal".
+                gnn_attention_score=None,
             )
         )
     return nodes
@@ -189,10 +191,22 @@ def optimize(
     original_edges: Sequence[DAGEdge],
     original_ms: float,
     run_id: str,
+    candidate_qeps: Mapping[str, object] | None = None,
 ) -> MlOutcome:
-    """Run symbolic pruning + beam search and shape the result for the API."""
+    """Run symbolic pruning + beam search and shape the result for the API.
+
+    ``candidate_qeps`` maps a beam configuration key to the EXPLAIN payload the
+    shadow database produced with that index set injected (Patch 2 Task 3), so
+    the GNN scores the hypothetical plan instead of the baseline.
+    """
     catalog = to_catalog(tables)
-    report = optimizer.optimize(sql=sql, plan=explain_plan, catalog=catalog, goal=goal)
+    report = optimizer.optimize(
+        sql=sql,
+        plan=explain_plan,
+        catalog=catalog,
+        goal=goal,
+        candidate_qeps=candidate_qeps,
+    )
 
     baseline_ms = float(report.baseline_latency_ms) or original_ms
     configurations = list(report.configurations)

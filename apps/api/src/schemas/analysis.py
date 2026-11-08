@@ -43,7 +43,9 @@ class DAGNode(StrictModel):
     estimated_cost: float
     estimated_rows: int
     actual_time_ms: float | None = None
-    gnn_attention_score: float
+    #: Patch 2: optional so the heuristic fallback can return ``None`` instead
+    #: of inventing attention weights that no GATv2 forward pass produced.
+    gnn_attention_score: float | None = None
 
 
 class DAGEdge(StrictModel):

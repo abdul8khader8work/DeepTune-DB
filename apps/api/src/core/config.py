@@ -42,10 +42,21 @@ class Settings(BaseSettings):
     explain_measurement_runs: int = Field(default=5, ge=1, le=15)
     max_sql_length: int = 10000
     analyze_rate_limit: str = "10/minute"
-    #: VACUUM ANALYZE is attempted by default; a read-only target role simply
-    #: fails the attempt and the run continues (see services/pipeline.py).
+    #: Pre-flight ANALYZE switch. When enabled the API opens an ephemeral
+    #: superuser connection (never the read-only role) and closes it again.
     target_allow_maintenance: bool = True
+    #: Full DSN for the maintenance connection; wins over the password fields.
+    target_superuser_dsn: SecretStr = SecretStr("")
+    #: Password used to rebuild the target DSN with ``target_superuser_user``.
+    target_superuser_password: SecretStr = SecretStr("")
+    target_superuser_user: str = "postgres"
+    #: ANALYZE must never hang the request path.
+    maintenance_timeout_ms: int = Field(default=10_000, ge=500, le=60_000)
     shadow_validate: bool = True
+    #: How many candidate configurations may be planned through hypopg per run.
+    #: Depth-1 (single-index) plans are fetched first; the rest fall back to the
+    #: offline plan builder instead of multiplying shadow-database round trips.
+    hypopg_prefetch_limit: int = Field(default=48, ge=0, le=500)
     run_ttl_seconds: int = 1800
 
     # --- Phase 4: neuro-symbolic engine wiring ------------------------------
@@ -74,6 +85,14 @@ class Settings(BaseSettings):
     @property
     def shadow_dsn(self) -> str:
         return self.shadow_db_dsn.get_secret_value()
+
+    @property
+    def superuser_dsn(self) -> str:
+        return self.target_superuser_dsn.get_secret_value()
+
+    @property
+    def superuser_password(self) -> str:
+        return self.target_superuser_password.get_secret_value()
 
 
 @lru_cache(maxsize=1)

@@ -43,10 +43,20 @@ class GlobalAttentionPooling(nn.Module):
 
 
 class Gatv2CostModel(nn.Module):
-    """3-layer GATv2 regressor predicting log(1 + execution_time_ms).
+    """Two-layer GATv2 regressor predicting log(1 + execution_time_ms).
 
-    Layer widths follow the constitution: h=128 with 4 -> 4 -> 1 attention
-    heads, followed by global attention pooling and a 128 -> 64 -> 1 MLP.
+    Patch 2 Task 4 / Constitution §3: the old 3-layer stack over-smoothed on
+    shallow query plans (5-12 nodes), washing out the low-level scan topology
+    that actually explains latency. The stack is now two layers wide
+    (h=128, 4 -> 4 heads) plus a residual skip that carries the *raw* node
+    features around both attention layers:
+
+        H_out = activation(H2 + skip_proj(X))
+
+    ``skip_proj`` exists purely for dimension parity: node features are 39-wide
+    while the concatenated attention output is 128-wide, so a ``nn.Linear``
+    projects the input into the residual space. When the widths match it
+    collapses to ``nn.Identity()``.
     """
 
     def __init__(
@@ -61,8 +71,10 @@ class Gatv2CostModel(nn.Module):
         super().__init__()
         if hidden_dim % heads != 0:
             raise ValueError("hidden_dim must be divisible by heads")
-        if layers != 3:
-            raise ValueError("The enforced architecture is exactly 3 GATv2 layers")
+        if layers != 2:
+            raise ValueError(
+                "The enforced architecture is exactly 2 GATv2 layers + residual"
+            )
 
         self.node_dim = node_dim
         self.edge_dim = edge_dim
@@ -87,22 +99,16 @@ class Gatv2CostModel(nn.Module):
                     heads=heads,
                     edge_dim=edge_dim,
                     dropout=0.0,
-                ),
-                GATv2Conv(
-                    hidden_dim,
-                    per_head,
-                    heads=heads,
-                    edge_dim=edge_dim,
-                    dropout=0.0,
-                ),
-                GATv2Conv(
-                    hidden_dim,
-                    hidden_dim,
-                    heads=1,
-                    edge_dim=edge_dim,
-                    dropout=0.0,
-                ),
+                )
+                for _ in range(layers)
             ]
+        )
+        # Residual projection: node_dim -> hidden_dim (the concat width of the
+        # final GATv2 layer). Identity when the widths already agree.
+        self.skip_proj: nn.Module = (
+            nn.Linear(node_dim, hidden_dim)
+            if node_dim != hidden_dim
+            else nn.Identity()
         )
         self.pool = GlobalAttentionPooling(hidden_dim)
         self.norms = nn.ModuleList(
@@ -125,17 +131,23 @@ class Gatv2CostModel(nn.Module):
         if edge_attr is None:
             edge_attr = edge_index.new_zeros((edge_index.size(1), self.edge_dim))
 
+        # Skip path is projected from the raw features, not from the trained
+        # projection, so it preserves the original operator/row/cost signal.
+        skip = self.skip_proj(data.x)
         x = self.dropout(self.activation(self.input_proj(data.x)))
         attentions: list[tuple[Tensor, Tensor]] = []
-        for layer, norm in zip(self.layers, self.norms):
-            x, (attended_edges, alpha) = layer(
+        last = len(self.layers) - 1
+        for index, (layer, norm) in enumerate(zip(self.layers, self.norms)):
+            out, (attended_edges, alpha) = layer(
                 x,
                 edge_index,
                 edge_attr=edge_attr,
                 return_attention_weights=True,
             )
             attentions.append((attended_edges, alpha))
-            x = norm(self.activation(x))
+            if index == last:
+                out = out + skip  # H_out = activation(H2 + skip_proj(X))
+            x = norm(self.activation(out))
 
         pooled = self.pool(x, getattr(data, "batch", None))
         prediction = self.head(pooled)
@@ -167,10 +179,19 @@ class AttentionSummary:
 def summarize_attention(
     edge_index: Tensor, alpha: Tensor, num_nodes: int
 ) -> tuple[AttentionSummary, ...]:
-    """Aggregate incoming edge attention into a per-node explainability score."""
+    """Aggregate incoming edge attention into a per-node explainability score.
+
+    PyG returns ``alpha`` with one column per attention head once the final
+    layer keeps ``concat=True`` (Patch 2: both layers use 4 heads). Each head's
+    softmax already sums to one per target, so averaging across heads keeps the
+    per-node mass on the same 0..1 scale as the single-head architecture.
+    """
     if alpha.numel() == 0 or edge_index.size(1) == 0:
         return ()
-    weights = alpha.view(-1).detach().cpu()
+    weights = alpha.detach().cpu()
+    if weights.dim() > 1:
+        weights = weights.mean(dim=-1)
+    weights = weights.view(-1)
     targets = edge_index[1].detach().cpu()
     totals = torch.zeros(num_nodes, dtype=torch.float32)
     totals.index_add_(0, targets, weights)

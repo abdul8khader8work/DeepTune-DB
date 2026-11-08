@@ -47,6 +47,11 @@ export function QONode({ data, selected }: NodeProps<QONodeModel>) {
   const shown = morphed && counterpart ? counterpart : data;
   const Icon = kindIcon[shown.kind] ?? Layers;
 
+  // Patch 2 Task 1: the heuristic fallback returns `null` attention. Coalesce
+  // once here so every downstream read is a number and no `null` reaches CSS.
+  const attention = shown.attention ?? 0;
+  const counterpartAttention = counterpart?.attention ?? data.attention ?? 0;
+
   // Danger wash fades out as the plan is optimized; the ok wash fades in.
   const dangerOpacity = useTransform(morphProgress, (t) =>
     data.bottleneck ? 1 - t : 0,
@@ -55,8 +60,8 @@ export function QONode({ data, selected }: NodeProps<QONodeModel>) {
     counterpart && !counterpart.bottleneck ? t : 0,
   );
 
-  const hot = heatmap && shown.attention >= 0.75;
-  const warm = heatmap && shown.attention >= 0.5;
+  const hot = heatmap && attention >= 0.75;
+  const warm = heatmap && attention >= 0.5;
 
   const borderTone =
     shown.bottleneck || shown.selectivity > 0.5
@@ -154,8 +159,8 @@ export function QONode({ data, selected }: NodeProps<QONodeModel>) {
           <Metric label="Attn" tone={hot ? "text-danger" : "text-ai"}>
             <MorphValue
               kind="attention"
-              from={data.attention}
-              to={counterpart?.attention ?? data.attention}
+              from={data.attention ?? 0}
+              to={counterpartAttention}
             />
           </Metric>
         </div>

@@ -36,24 +36,26 @@ from the API lifespan and calls it per request.
 ```
 input projection 39 -> 128
 GATv2Conv(128 -> 128, heads=4, edge_dim=10)
-GATv2Conv(128 -> 128, heads=4, edge_dim=10)
-GATv2Conv(128 -> 128, heads=1, edge_dim=10)
+GATv2Conv(128 -> 128, heads=4, edge_dim=10)  + skip_proj(39 -> 128)
 GlobalAttentionPooling(128)
 MLP 128 -> 64 -> 1
 dropout 0.2
 ```
 
-- Exactly three GATv2 layers, hidden width 128, head counts 4 → 4 → 1.
+- Two GATv2 layers, hidden width 128, head counts 4 → 4, plus a residual skip that adds the raw
+  node features (projected 39 → 128) to the last layer's output:
+  `H_out = activation(H2 + skip_proj(X))`. The third layer was removed because it over-smoothed
+  shallow query plans (5–12 nodes), washing out the scan-level topology that explains latency.
 - `LayerNorm` after each GATv2 layer keeps the eval-mode activation scale stable.
 - Dropout 0.2 is applied after the input projection and inside the output MLP. Attention dropout
   inside `GATv2Conv` is disabled: dropping attention coefficients made the eval-mode attention
   distribution diverge from training and collapsed the regressor's output scale. This is an
   implementation detail, not a change to the 0.2 dropout contract.
-- Trainable parameters: **126,210**.
-- Attention weights from the last layer are normalised per target node and surfaced as
-  `NodeAttention` records for the Phase 4 explainability panel.
-- Inference always uses `torch.no_grad()`; `ModelScorer` and `Gatv2CostModel.predict_log_latency`
-  both enforce it.
+- Trainable parameters: **96,514** (down from 126,210 after the layer removal).
+- Attention weights from the last layer are averaged across the 4 heads, normalised per target
+  node, and surfaced as `NodeAttention` records for the Phase 4 explainability panel.
+- Inference always uses `torch.no_grad()`; `ModelScorer`, the beam loop inside
+  `PlanOptimizer.optimize`, and `Gatv2CostModel.predict_log_latency` all enforce it.
 
 ## Symbolic pruning
 
@@ -78,14 +80,17 @@ discarded alternative is recorded as a `PruningRejection` so the UI can explain 
 
 ## Beam search
 
-- Width 5, at most 3 indexes per configuration, at most one index per table.
+- Width 10, at most 3 indexes per configuration, at most one index per table.
 - Configurations are ranked by predicted log latency; the GNN scorer runs under `torch.no_grad()`.
 - Within a 5% latency band, the configuration with the lowest write amplification wins; the next
   tie-break is fewer indexes, then lower latency.
 - Per-table storage is checked again during expansion.
-- `HeuristicPlanBuilder` is the Phase 3 stand-in for hypopg: it flips matching scans to index scans,
-  shrinks their cost/rows, and rolls the savings up to the root cost. Phase 4 injects the real
-  hypopg-modified plan through `candidate_plan_builder`; the interface is unchanged.
+- `enumerate_configurations` mirrors the expansion rules without scoring anything, so the API can
+  prefetch a hypothetical plan for every configuration the search can reach (`plan_requests`).
+- `_HypotheticalPlanBuilder` then scores the real post-`hypopg` plan supplied under
+  `candidate_qeps`. `HeuristicPlanBuilder` remains the offline stand-in: it flips matching scans to
+  index scans, shrinks their cost/rows, and rolls the savings up to the root cost, and it is used for
+  any configuration the prefetcher did not cover.
 - Speedups use the measured baseline (`Execution Time`) when present, otherwise the model baseline.
 
 ## Training
@@ -107,25 +112,29 @@ discarded alternative is recorded as a `PruningRejection` so the UI can explain 
 
 ### Measured results
 
-Checkpoint: `weights/demo-final.pt` — 120 epochs over **5,000 synthetic TPC-H-like QEP graphs**
-(`--train-per-tier 1500 1700 1800`), 150 validation and 200 held-out test graphs, seed 7.
-Architecture: GATv2, 3 layers, 128 hidden, 4 → 4 → 1 heads, Global Attention Pooling, dropout 0.2,
-126,210 parameters. Metrics are on held-out synthetic plans; the GNN is a regressor, so accuracy is
-never reported.
+Checkpoint: `weights/demo-final.pt` — the 2-layer residual model, fine-tuned for 90 epochs (best
+epoch 62, early stop at 77) from the previous 3-layer 120-epoch weights over **5,000 synthetic
+TPC-H-like QEP graphs** (`--train-per-tier 1500 1700 1800`), 150 validation and 200 held-out test
+graphs, seed 7. The transfer keeps every unchanged tensor, drops the removed third block, and
+zero-initialises the new `skip_proj`, so fine-tuning starts from the exact previous function.
+Architecture: GATv2, 2 layers + residual, 128 hidden, 4 → 4 heads, Global Attention Pooling,
+dropout 0.2, **96,514** parameters. Metrics are on held-out synthetic plans; the GNN is a
+regressor, so accuracy is never reported.
 
 | Split | MAE (ms) | RMSE (ms) | Spearman ρ | Median Q-error | MAPE |
 |---|---:|---:|---:|---:|---:|
-| Validation (mixed tiers) | 52.18 | 84.84 | **0.9935** | 1.072 | 7.86% |
-| Test, mixed tiers (training run, n=200) | 91.22 | 124.72 | **0.9643** | 1.068 | 7.60% |
-| Test, tier 1 (`--seed 999`) | 11.48 | 20.09 | **0.9862** | 1.088 | 9.22% |
-| Test, tier 2 (`--seed 999`) | 44.45 | 59.64 | **0.9678** | 1.072 | 8.07% |
-| Test, tier 3 (`--seed 999`) | 89.67 | 137.34 | **0.9561** | 1.061 | 7.57% |
+| Validation (mixed tiers) | 68.11 | 122.27 | **0.9926** | 1.080 | 8.73% |
+| Test, mixed tiers (n=200) | 140.72 | 188.11 | **0.9609** | 1.113 | 11.00% |
 
-The Enforcer's target ρ > 0.85 is met on every tier, and the shipped checkpoint also beats the
-previous 110-epoch / 1,700-graph checkpoint (test ρ 0.9274) on every metric. `make ml-train` is the
-literal 20-epoch Patch 0 recipe; `make ml-train-full` is the 120-epoch quality-gated recipe that
-produced this checkpoint. A 20-epoch run reaches ρ ≈ 0.67 on the held-out test split, so it is kept
-only as a smoke recipe and never shipped. The checkpoint is not committed (`*.pt` and
+The Enforcer's target ρ > 0.85 is met with margin. Compared with the previous 3-layer checkpoint on
+the same held-out split (ρ 0.9643, MAE 91.22 ms, median Q-error 1.068), the residual model keeps the
+rank correlation that the beam search depends on (0.9609) while removing 24% of the parameters
+(126,210 → 96,514). Absolute error rises on this synthetic workload (median Q-error 1.068 → 1.113);
+the trade is deliberate, because the Patch 2 mandate is to stop over-smoothing shallow plans rather
+than to squeeze the last few milliseconds out of a generator that has no real plan variance.
+`make ml-train` is the literal 20-epoch Patch 0 recipe; `make ml-train-full` is the full
+quality-gated recipe. A 20-epoch run reaches ρ ≈ 0.67 on the held-out test split, so it is kept only
+as a smoke recipe and never shipped. The checkpoint is not committed (`*.pt` and
 `packages/ml-engine/weights/` are git-ignored).
 
 ## Inference facade
@@ -218,11 +227,14 @@ synthetic workload; Phase 4 supplies real hypopg plans through the same interfac
 - [x] Weights and checkpoints are git-ignored.
 - [x] `CREATE INDEX CONCURRENTLY`, the storage budget, the 3-index write-heavy cap, and the 5% tie-break are
       covered by tests.
-- [x] Exactly 3 GATv2 layers with 4 → 4 → 1 heads and a 128 → 64 → 1 output MLP.
+- [x] Exactly 2 GATv2 layers with 4 → 4 heads, a residual skip, and a 128 → 64 → 1 output MLP.
+- [x] Every beam configuration is scored on the post-`hypopg` plan when the API supplies one;
+      missing plans fall back to the offline builder and the trace says how many did.
 
 ## Deferred to Phase 4
 
-- Real `EXPLAIN (ANALYZE, FORMAT JSON)` collection and hypopg-modified plans.
-- Wiring `PlanOptimizer` into the FastAPI lifespan and the `/queries/analyze` pipeline.
+- Real `EXPLAIN (ANALYZE, FORMAT JSON)` collection and hypopg-modified plans (shipped in
+  `docs/phase-4-integration.md`; Patch 2 Task 3 moved the plan fetch *before* the beam).
+- Wiring `PlanOptimizer` into the FastAPI lifespan and the `/queries/analyze` pipeline (shipped).
 - Streaming attention/DAG updates to the web console.
 - Persisting training metrics and checkpoint metadata in the metadata database.

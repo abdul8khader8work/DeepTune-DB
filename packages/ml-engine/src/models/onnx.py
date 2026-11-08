@@ -189,14 +189,18 @@ class OnnxExportModel(nn.Module):
         self, x: Tensor, edge_index: Tensor, edge_attr: Tensor
     ) -> tuple[Tensor, Tensor, Tensor]:
         model = self.model
+        skip = model.skip_proj(x)
         hidden = model.dropout(model.activation(model.input_proj(x)))
         attended_edges = edge_index
         attention = x.new_zeros((0, 1))
-        for layer, norm in zip(model.layers, model.norms):
+        last = len(model.layers) - 1
+        for index, (layer, norm) in enumerate(zip(model.layers, model.norms)):
             src, dst, attr = _with_self_loops(
                 edge_index, edge_attr, x.size(0), layer.fill_value
             )
             out, alpha = _gat_layer(layer, hidden, src, dst, attr)
+            if index == last:
+                out = out + skip
             hidden = norm(model.activation(out))
             attended_edges = torch.stack([src, dst])
             attention = alpha

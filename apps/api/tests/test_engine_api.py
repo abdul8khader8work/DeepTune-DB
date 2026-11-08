@@ -99,7 +99,7 @@ def test_engine_status_reports_the_loaded_checkpoint(client: TestClient) -> None
     body = client.get("/api/v1/engine/status").json()
     if body["available"]:
         assert body["checkpoint"]
-        assert body["layers"] == 3
+        assert body["layers"] == 2
         assert body["heads"] == 4
     else:
         assert body["error"]

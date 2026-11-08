@@ -119,7 +119,8 @@ export interface DAGNode {
   estimated_cost: number;
   estimated_rows: number;
   actual_time_ms: number | null;
-  gnn_attention_score: number;
+  /** Patch 2 Task 1: null when the heuristic fallback scored the plan. */
+  gnn_attention_score: number | null;
 }
 
 export interface DAGEdge {
