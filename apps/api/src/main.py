@@ -133,7 +133,7 @@ def create_app() -> FastAPI:
         title="DeepTune API",
         version=settings.app_version,
         description=(
-            "Read-only PostgreSQL plan analysis, hypothetical index validation "
+            "Read-only PostgreSQL plan analysis, shadow-index validation "
             "with hypopg, and reviewable index recommendations."
         ),
         lifespan=lifespan,

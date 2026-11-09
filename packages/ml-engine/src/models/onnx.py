@@ -58,6 +58,7 @@ _METADATA_KEYS = (
     "seed",
     "parameters",
     "curriculum",
+    "smearing_factor",
     "hidden_dim",
     "layers",
     "heads",

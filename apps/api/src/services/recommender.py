@@ -187,8 +187,9 @@ def recommend_indexes(
             explanation=(
                 f"Heuristic candidate for {schema_name}.{table_name}: "
                 f"{len(bucket.equality)} equality, {len(bucket.join)} join, "
-                f"{len(bucket.range)} range predicate(s). Validated with hypopg "
-                f"before it is shown as a recommendation."
+                f"{len(bucket.range)} range predicate(s). Measured against a real "
+                f"index in the shadow database before it is shown as a "
+                f"recommendation."
             ),
         )
         candidates.append((score, candidate))

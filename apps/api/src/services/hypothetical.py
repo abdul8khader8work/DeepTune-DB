@@ -85,6 +85,12 @@ async def get_hypothetical_qep(
 ) -> ExplainResult:
     """Inject the index set, EXPLAIN the query, and always drop the indexes.
 
+    The plan is a plain ``EXPLAIN`` (no ``ANALYZE``) on purpose: hypopg only
+    injects a hypothetical index while the planner is building an explain-only
+    statement (``hypopg_index.c``: "hypothetical indexes *ONLY* in an
+    explain-no-analyze command"). Adding ``ANALYZE`` makes the planner ignore
+    the index and silently returns the un-indexed plan for every configuration.
+
     A single index is passed as a string; a multi-index beam configuration is
     passed as a sequence, so one EXPLAIN sees the whole candidate set at once.
     """
@@ -108,7 +114,7 @@ async def get_hypothetical_qep(
             if row is None:
                 raise HypotheticalPlanError("hypopg_create_index returned no row")
             index_ids.append(int(row["indexrelid"]))
-        row = await conn.fetchrow(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {target_query}")
+        row = await conn.fetchrow(f"EXPLAIN (FORMAT JSON) {target_query}")
         if row is None:
             raise HypotheticalPlanError("EXPLAIN returned no rows")
         result = result_from_payload(row[0])
@@ -172,7 +178,9 @@ async def prefetch_configurations(
         plans[request.key] = {
             "Plan": result.plan,
             "Planning Time": result.planning_time_ms,
-            "Execution Time": result.execution_time_ms,
+            # No "Execution Time": the candidate plan is a planner estimate, not
+            # a measurement. The engine labels it accordingly instead of reading
+            # a fabricated 0 ms.
         }
     return plans
 

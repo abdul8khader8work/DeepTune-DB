@@ -78,6 +78,27 @@ def mape_percent(y_true: Iterable[float], y_pred: Iterable[float]) -> float:
     return float(np.mean(np.abs(pred[mask] - true[mask]) / true[mask]) * 100.0)
 
 
+def duan_smearing_factor(
+    log_true: Iterable[float], log_pred: Iterable[float]
+) -> float:
+    """Duan's smearing estimator for a ``log1p`` target.
+
+    The model minimises Huber loss in ``z = log1p(latency_ms)`` space, so
+    ``expm1(z_hat)`` estimates the conditional median. Duan's estimator
+    recovers the conditional mean by averaging ``exp(residual)`` over a
+    held-out sample:
+
+        ``S = mean(exp(z_i - z_hat_i))``
+        ``E[y | x] = exp(z_hat) * S - 1``
+
+    Residuals are clipped to ``[-50, 50]`` so one pathological validation graph
+    cannot turn the factor into ``inf`` (and then poison every later request).
+    """
+    true, pred = _as_arrays(log_true, log_pred)
+    residuals = np.clip(true - pred, -50.0, 50.0)
+    return float(np.mean(np.exp(residuals)))
+
+
 def geometric_mean_speedup(
     baseline_ms: Iterable[float], optimized_ms: Iterable[float]
 ) -> float:

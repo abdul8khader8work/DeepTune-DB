@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { AnimatePresence, motion, useTransform, type Transition } from "framer-motion";
 import {
@@ -35,7 +36,14 @@ function selectivityTone(selectivity: number): string {
   return "text-danger";
 }
 
-export function QONode({ data, selected }: NodeProps<QONodeModel>) {
+// Patch 4 Task 2: React Flow re-renders every node whenever the node array is
+// rebuilt. The morph itself runs through a Framer Motion value, so a node only
+// needs to re-render when its own data or selection changes. `memo` keeps the
+// 60 fps drag budget from being spent on identical card trees.
+export const QONode = memo(function QONode({
+  data,
+  selected,
+}: NodeProps<QONodeModel>) {
   const heatmap = useGraphStore((state) => state.heatmap);
   // The only React render during a scrub: the 50% identity flip. Everything
   // numeric in between is written to the DOM by `MorphValue`.
@@ -169,4 +177,6 @@ export function QONode({ data, selected }: NodeProps<QONodeModel>) {
       <Handle type="source" position={Position.Top} />
     </div>
   );
-}
+});
+
+QONode.displayName = "QONode";

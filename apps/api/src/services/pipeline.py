@@ -31,7 +31,7 @@ from src.services import ml
 from src.services.dag import Dag, build_dag
 from src.services.engine import EngineBundle
 from src.services.explain import explain_steady_state
-from src.services.hypothetical import prefetch_configurations
+from src.services.hypothetical import HypotheticalPlanError, prefetch_configurations
 from src.services.introspection import fetch_schema
 from src.services.maintenance import refresh_table_statistics
 from src.services.recommender import recommend_indexes
@@ -271,6 +271,10 @@ async def _engine_stage(
         original_nodes=outcome.original_nodes,
         optimized_nodes=outcome.optimized_nodes or dag.nodes,
         edges=outcome.edges or dag.edges,
+        # Task 1: ``outcome.predicted_ms`` is already Duan-smearing-corrected
+        # inside the engine's inverse log-transform (``search.beam``). Applying
+        # the factor again here would double-correct the reported latency, so
+        # the pipeline only scales cost by the corrected number.
         optimized_metrics=ml.scale_metrics(
             baseline.total_cost,
             baseline.execution_time_ms,
@@ -362,7 +366,7 @@ async def _execute(
             run_id,
             "hypopg_validation",
             80,
-            "Injecting hypothetical indexes into the shadow database…",
+            "Building candidate indexes in the shadow database…",
         )
         validated_recommendations, shadow_dag, shadow_metrics = (
             await _validate_candidates(
@@ -437,9 +441,9 @@ async def _validate_candidates(
                     settings.explain_timeout_ms,
                     settings.explain_measurement_runs,
                 )
-            except (asyncpg.PostgresError, ValueError) as exc:
+            except (asyncpg.PostgresError, HypotheticalPlanError, ValueError) as exc:
                 logger.warning(
-                    "hypopg validation failed for %s: %s",
+                    "shadow validation failed for %s: %s",
                     candidate.target_table,
                     exc.__class__.__name__,
                 )

@@ -6,7 +6,9 @@ import math
 
 import pytest
 
+from config import inverse_log_latency
 from training.metrics import (
+    duan_smearing_factor,
     geometric_mean_speedup,
     mae_ms,
     mape_percent,
@@ -66,3 +68,33 @@ def test_mismatched_lengths_raise() -> None:
         mae_ms([1.0], [1.0, 2.0])
     with pytest.raises(ValueError):
         mae_ms([], [])
+
+
+def test_duan_smearing_factor_recovers_the_mean() -> None:
+    # Residuals +log(2), 0, -log(2): mean(exp(residual)) = (2 + 1 + 0.5) / 3.
+    true_log = [math.log(2.0), 0.0, -math.log(2.0)]
+    pred_log = [0.0, 0.0, 0.0]
+    factor = duan_smearing_factor(true_log, pred_log)
+    assert factor == pytest.approx((2.0 + 1.0 + 0.5) / 3.0)
+
+
+def test_duan_smearing_factor_is_one_for_perfect_predictions() -> None:
+    values = [0.0, 1.0, 2.0, 3.0]
+    assert duan_smearing_factor(values, values) == pytest.approx(1.0)
+
+
+def test_inverse_log_latency_matches_expm1_without_calibration() -> None:
+    assert inverse_log_latency(2.5) == pytest.approx(math.expm1(2.5))
+    assert inverse_log_latency(2.5, 1.0) == pytest.approx(math.expm1(2.5))
+
+
+def test_inverse_log_latency_applies_the_multiplicative_factor() -> None:
+    # E[y|x] = exp(z_hat) * S - 1, not expm1(z_hat) * S.
+    assert inverse_log_latency(2.5, 1.4) == pytest.approx(
+        math.exp(2.5) * 1.4 - 1.0
+    )
+
+
+def test_inverse_log_latency_rejects_a_poisoned_factor() -> None:
+    assert inverse_log_latency(1.0, 0.0) == pytest.approx(math.expm1(1.0))
+    assert inverse_log_latency(1.0, -3.0) == pytest.approx(math.expm1(1.0))

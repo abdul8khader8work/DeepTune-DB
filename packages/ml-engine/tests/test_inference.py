@@ -26,6 +26,20 @@ def optimizer(checkpoint: Path) -> PlanOptimizer:
     return load_optimizer(InferenceConfig(checkpoint_path=str(checkpoint)))
 
 
+@pytest.fixture()
+def calibrated_checkpoint(tmp_path: Path) -> Path:
+    config = ModelConfig()
+    model = build_model(config)
+    path = tmp_path / "calibrated.pt"
+    save_checkpoint(
+        path,
+        model,
+        config,
+        metadata={"epoch": 120, "smearing_factor": 1.75},
+    )
+    return path
+
+
 def test_optimize_returns_reviewable_report(
     optimizer: PlanOptimizer,
     join_sql: str,
@@ -70,6 +84,38 @@ def test_rank_configurations_matches_report(
 def test_optimizer_exposes_checkpoint_metadata(optimizer: PlanOptimizer) -> None:
     assert optimizer.metadata["synthetic"] is True
     assert optimizer.model_config == ModelConfig()
+
+
+def test_optimizer_reads_the_persisted_duan_smearing_factor(
+    calibrated_checkpoint: Path,
+    join_sql: str,
+    explain_payload: dict[str, Any],
+    catalog: SchemaCatalog,
+) -> None:
+    optimizer = load_optimizer(
+        InferenceConfig(
+            checkpoint_path=str(calibrated_checkpoint),
+            prefer_onnx=False,
+        )
+    )
+    assert optimizer.smearing_factor == pytest.approx(1.75)
+
+    report = optimizer.optimize(join_sql, explain_payload, catalog)
+    assert report.smearing_factor == pytest.approx(1.75)
+    assert any("Duan smearing S=1.7500" in line for line in report.trace)
+
+
+def test_inference_config_can_override_the_smearing_factor(
+    calibrated_checkpoint: Path,
+) -> None:
+    optimizer = load_optimizer(
+        InferenceConfig(
+            checkpoint_path=str(calibrated_checkpoint),
+            prefer_onnx=False,
+            smearing_factor=2.5,
+        )
+    )
+    assert optimizer.smearing_factor == pytest.approx(2.5)
 
 
 def test_optimize_without_candidates_still_reports(

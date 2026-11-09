@@ -53,7 +53,7 @@ export function RecommendCard() {
     try {
       const response = await api.applyRecommendation(recommendation.id);
       setStatus("applied");
-      toast.success("Hypothetical index applied", {
+      toast.success("Shadow index applied", {
         description: `${response.message} (${response.validated_execution_time_ms.toFixed(1)} ms)`,
       });
     } catch (error) {
@@ -68,7 +68,7 @@ export function RecommendCard() {
     try {
       await api.revertRecommendation(recommendation.id);
       setStatus("idle");
-      toast.success("Hypothetical index dropped");
+      toast.success("Shadow index dropped");
     } catch (error) {
       setStatus("applied");
       toast.error("Could not revert the index", { description: describe(error) });
@@ -118,8 +118,8 @@ export function RecommendCard() {
 
           <p className="py-2 text-center text-[10px] text-content-disabled">
             {recommendation
-              ? `Write amplification +${recommendation.write_impact_percentage.toFixed(1)}% · storage +${formatBytes(recommendation.storage_overhead_bytes)}`
-              : "Write amplification +2.1% · storage +0.4%"}
+              ? `Write amplification +${recommendation.write_impact_percentage.toFixed(1)}% · estimated size +${formatBytes(recommendation.storage_overhead_bytes)}`
+              : "Write amplification +2.1% · estimated size +0.4%"}
           </p>
         </div>
       </ScrollArea>

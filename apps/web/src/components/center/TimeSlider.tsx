@@ -9,6 +9,14 @@ import { useGraphStore } from "@/store/useGraphStore";
 
 const speeds = [0.5, 1, 2] as const;
 
+//: Patch 4 Task 2: a 1x playback crosses the morph in 2.5 s. The loop is driven
+//: by requestAnimationFrame (one update per display frame) instead of a 50 ms
+//: `setInterval`, so the motion value and the node readouts advance at the
+//: display's refresh rate. Keep the per-frame delta below this cap so a stalled
+//: frame cannot teleport the slider.
+const PLAYBACK_MS = 2_500;
+const MAX_FRAME_DELTA_MS = 100;
+
 export function TimeSlider() {
   const view = useGraphStore((state) => state.view);
   const setView = useGraphStore((state) => state.setView);
@@ -20,15 +28,26 @@ export function TimeSlider() {
 
   useEffect(() => {
     if (!playing) return;
-    const interval = window.setInterval(() => {
+    let frame = 0;
+    let last: number | null = null;
+    const stepMs = PLAYBACK_MS / speed;
+
+    const tick = (now: number) => {
+      if (last === null) last = now;
+      const delta = Math.min(now - last, MAX_FRAME_DELTA_MS);
+      last = now;
+
       const current = useGraphStore.getState().sliderT;
       if (current >= 1) {
         setPlaying(false);
         return;
       }
-      setSliderT(Math.min(1, current + 0.02 * speed));
-    }, 50);
-    return () => window.clearInterval(interval);
+      setSliderT(Math.min(1, current + delta / stepMs));
+      frame = window.requestAnimationFrame(tick);
+    };
+
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
   }, [playing, speed, setSliderT]);
 
   // The view toggle pins time travel to 100%; the slider only drives the morph

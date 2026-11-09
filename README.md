@@ -16,11 +16,12 @@ database; it produces a script you review and apply yourself.
 | **1. UI Skeleton & Design System** | Next.js 14, 3-pane console, design tokens, dummy DAG | **Complete** |
 | **2. Backend API & Security** | FastAPI, read-only role, `EXPLAIN` sandbox, `hypopg` shadow DB | **Complete** |
 | **3. Neuro-Symbolic ML Engine** | JSON→PyG parser, GATv2, symbolic pruning, beam search | **Complete** |
-| **4. Integration & Wow Factor** | Live DAG, real metrics, hypopg apply, streaming Copilot | **Complete** |
+| **4. Integration & Wow Factor** | Live DAG, real metrics, shadow-index apply, streaming Copilot | **Complete** |
 
 All four phases are complete. The web console now runs against the live API and the trained engine:
-`Run & Optimize` executes a real `EXPLAIN`, the GNN ranks index configurations, hypopg validates the
-winner, and the copilot streams an explanation of the result.
+`Run & Optimize` executes a real `EXPLAIN`, the GNN ranks index configurations, a real index built in
+the disposable shadow database measures the validated speedup, and the copilot streams an
+explanation of the result.
 
 ---
 
@@ -70,9 +71,12 @@ Everything lives under `docs/`:
   remaining three reported, so Postgres caching cannot decide the number.
 - **SQL guard:** `sqlglot` AST parsing rejects anything that is not exactly one read-only `SELECT`.
   No regex sanitising anywhere.
-- **hypopg shadow DB:** hypothetical indexes are validated in a disk-backed PostgreSQL 16
-  container (`shadow_data` named volume), then emitted as reviewable `CREATE INDEX CONCURRENTLY`
-  scripts. Data no longer lives in `tmpfs`, so a growing demo dataset cannot exhaust host RAM.
+- **Shadow DB validation:** `hypopg` supplies the post-index QEP that the beam scores (a plain
+  `EXPLAIN`, because hypopg only injects an index into an explain-only statement). The winning
+  candidate is then built **for real** in the disk-backed PostgreSQL 16 shadow container
+  (`shadow_data` named volume), measured with the median-of-N protocol, and dropped again. The
+  approved SQL is still emitted as a reviewable `CREATE INDEX CONCURRENTLY` script; no DDL ever
+  reaches the target database, and data no longer lives in `tmpfs`.
 - **Security:** HS256 bearer tokens minted by `python -m src.cli.token`, Fernet-encrypted DSNs at
   rest, CORS locked to `http://localhost:3000`, and a per-IP rate limit on `/queries/analyze`.
 - **Infrastructure:** `docker-compose.yml` runs metadata, target, shadow, API, web (Next.js), and
@@ -126,8 +130,8 @@ See `docs/phase-3-ml-engine.md` for the graph contract, pruning table, and full 
   symbolic log, and pruned candidates are listed with their rejection reason.
 - **Honest degradation:** a missing checkpoint, a broken file, or `ML_ENABLED=false` drops the run to
   the Phase 2 heuristic recommender and says so in the UI — startup never fails because of the model.
-- **Apply / revert:** the recommendation card injects the hypothetical index into the shadow DB via
-  hypopg, then reverts it. No DDL ever touches the target database.
+- **Apply / revert:** the recommendation card builds the candidate index in the disposable shadow DB
+  (measured with `EXPLAIN (ANALYZE)`) and drops it on revert. No DDL ever touches the target database.
 - **Streaming Copilot:** `/ws/copilot/{run_id}` streams a grounded, deterministic explanation over a
   WebSocket in 3-character chunks at ~20 ms per character, preceded by a `thinking` pause and one
   collapsible `[tool] → result` chip per tool frame. No external LLM, no query text leaving the
@@ -306,11 +310,10 @@ Exactly four button variants are permitted: **Primary**, **Secondary**, **Ghost*
 ## Roadmap
 
 All four planned phases are complete: the design system, the secured FastAPI backend, the
-neuro-symbolic engine (ρ = 0.93 on held-out tier-3 plans), and the integration that connects them.
+neuro-symbolic engine (ρ = 0.97 on held-out tier-3 plans), and the integration that connects them.
 
 Natural next steps, none of which are required for the current scope:
 
-- Feed hypopg-modified plans back into the GNN instead of scoring the baseline graph.
 - Collect a real `EXPLAIN (ANALYZE)` corpus to replace the synthetic training workload.
 - Persist attention and explainability payloads so historical runs stay fully inspectable.
 - Add an index-advisor view for workloads (many queries) rather than a single statement.

@@ -11,6 +11,7 @@ from torch_geometric.data import Data
 
 from config import (
     BEAM_WIDTH,
+    DEFAULT_SMEARING_FACTOR,
     MAX_INDEXES,
     NODE_ACTUAL_ROWS_INDEX,
     NODE_COST_INDEX,
@@ -18,6 +19,7 @@ from config import (
     STORAGE_BUDGET_RATIO,
     TIE_MARGIN,
     expm1,
+    inverse_log_latency,
 )
 from parsers.explain import PlanGraph
 from parsers.schema import SchemaCatalog
@@ -48,6 +50,10 @@ class BeamSearchConfig:
     max_indexes: int = MAX_INDEXES
     tie_margin: float = TIE_MARGIN
     storage_budget_ratio: float = STORAGE_BUDGET_RATIO
+    #: Duan's smearing factor persisted by training. ``1.0`` keeps the naive
+    #: inverse transform for old checkpoints (and is what every unit test that
+    #: uses a hand-written scorer expects).
+    smearing_factor: float = DEFAULT_SMEARING_FACTOR
 
 
 @dataclass(frozen=True)
@@ -264,7 +270,11 @@ class BeamSearch:
         catalog: SchemaCatalog | None = None,
     ) -> BeamResult:
         baseline_log = self._scorer.predict_log_latency(base_graph)
-        baseline_ms = max(expm1(baseline_log), 1e-6)
+        factor = self._config.smearing_factor
+        # Ranking stays in the model's own scale (``expm1(log)``); Duan's
+        # factor is a constant multiplier, so applying it only to the reported
+        # milliseconds leaves the beam's ordering untouched.
+        baseline_ms = inverse_log_latency(baseline_log, factor)
         # Prefer the measured baseline when EXPLAIN ANALYZE supplied one; the
         # model's own baseline is only a fallback for unlabelled plans.
         speedup_reference = (
@@ -328,7 +338,8 @@ class BeamSearch:
             states = ordered[: self._config.width]
             trace.append(
                 f"depth {depth}: {len(expanded)} configurations -> keep "
-                f"{len(states)} (best {states[0].latency_ms:.2f} ms)"
+                f"{len(states)} (best "
+                f"{inverse_log_latency(states[0].log_latency, factor):.2f} ms)"
             )
 
         ranked = self._order(list(seen_states.values()))[: max(self._config.width, 10)]
@@ -336,8 +347,14 @@ class BeamSearch:
             RankedConfiguration(
                 candidates=state.candidates,
                 predicted_log_latency=state.log_latency,
-                predicted_latency_ms=round(state.latency_ms, 4),
-                predicted_speedup=round(speedup_reference / state.latency_ms, 3),
+                predicted_latency_ms=round(
+                    inverse_log_latency(state.log_latency, factor), 4
+                ),
+                predicted_speedup=round(
+                    speedup_reference
+                    / inverse_log_latency(state.log_latency, factor),
+                    3,
+                ),
                 write_penalty=round(state.write_penalty, 3),
             )
             for state in ranked

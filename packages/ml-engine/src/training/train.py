@@ -31,7 +31,7 @@ from training.dataset import (
     concat_datasets,
     make_loader,
 )
-from training.evaluation import evaluate_model
+from training.evaluation import evaluate_model_report
 from training.workload import (
     build_demo_catalog,
     curriculum_tier,
@@ -97,6 +97,7 @@ def train(args: argparse.Namespace) -> dict[str, float]:
     validation_loader = make_loader(validation, batch_size=args.batch_size)
     best_score = float("-inf")
     best_metrics: dict[str, float] = {}
+    best_smearing = 1.0
     best_epoch = 0
     stale_epochs = 0
     tier_best = float("-inf")
@@ -145,7 +146,10 @@ def train(args: argparse.Namespace) -> dict[str, float]:
             batches += 1
         scheduler.step()
 
-        metrics = evaluate_model(model, validation_loader, device=args.device)
+        evaluation = evaluate_model_report(
+            model, validation_loader, device=args.device
+        )
+        metrics = evaluation.metrics
         mean_loss = running_loss / max(batches, 1)
         learning_rate = optimizer.param_groups[0]["lr"]
         print(
@@ -159,6 +163,7 @@ def train(args: argparse.Namespace) -> dict[str, float]:
         if score > best_score:
             best_score = score
             best_metrics = metrics
+            best_smearing = evaluation.smearing_factor
             best_epoch = epoch
             save_checkpoint(
                 output,
@@ -168,6 +173,9 @@ def train(args: argparse.Namespace) -> dict[str, float]:
                     "epoch": epoch,
                     "seed": args.seed,
                     "val_metrics": metrics,
+                    # Patch 4 Task 1: calibrate the inverse log-transform on
+                    # the same distribution early stopping selected against.
+                    "smearing_factor": evaluation.smearing_factor,
                     "parameters": parameter_count(model),
                     "curriculum": "1-20 simple, 21-50 joins, 51+ complex",
                 },
@@ -187,13 +195,16 @@ def train(args: argparse.Namespace) -> dict[str, float]:
         save_checkpoint(output, model, model_config, metadata={"epoch": args.epochs})
 
     best_model, _, _ = load_checkpoint(output, map_location=args.device)
-    test_metrics = evaluate_model(
+    test_report = evaluate_model_report(
         best_model, make_loader(test, batch_size=args.batch_size), device=args.device
     )
+    test_metrics = test_report.metrics
     report = {
         "best_epoch": best_epoch,
         "best_val": best_metrics,
+        "smearing_factor": best_smearing,
         "test": test_metrics,
+        "test_smearing_factor": test_report.smearing_factor,
         "parameters": parameter_count(best_model),
         "seed": args.seed,
         "epochs": args.epochs,

@@ -106,7 +106,9 @@ class AnalysisResult(StrictModel):
 
 
 class ApplyIndexResponse(StrictModel):
-    hypopg_index_id: int
+    #: Name of the real index built in the disposable shadow database. It is
+    #: dropped by /revert; the target database never receives this DDL.
+    shadow_index_name: str
     status: str
     validated_execution_time_ms: float
     message: str

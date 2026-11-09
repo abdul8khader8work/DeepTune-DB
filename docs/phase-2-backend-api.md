@@ -34,8 +34,8 @@ All canonical routes live under `/api/v1`. `/health` is public; everything else 
 | `POST` | `/api/v1/queries/analyze` | Validates SQL synchronously, then runs the pipeline in a background task (`202`) |
 | `GET` | `/api/v1/queries/{run_id}/status` | `queued → parsing → gnn_inference → hypopg_validation → completed/failed` |
 | `GET` | `/api/v1/queries/{run_id}/results` | Baseline/optimised metrics, DAG nodes + edges, validated recommendations |
-| `POST` | `/api/v1/recommendations/{id}/apply` | Creates the hypothetical index in the shadow DB only |
-| `POST` | `/api/v1/recommendations/{id}/revert` | Drops the hypothetical index and closes the session |
+| `POST` | `/api/v1/recommendations/{id}/apply` | Builds the candidate index for real in the disposable shadow DB and measures it |
+| `POST` | `/api/v1/recommendations/{id}/revert` | Drops the shadow index and closes the session |
 
 Compatibility aliases (hidden from OpenAPI): `POST /api/connect`, `POST /api/analyze`,
 `POST /api/apply_index` (`{"recommendation_id": "..."}`).

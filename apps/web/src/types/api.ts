@@ -174,7 +174,7 @@ export interface AnalysisResult {
 }
 
 export interface ApplyIndexResponse {
-  hypopg_index_id: number;
+  shadow_index_name: string;
   status: string;
   validated_execution_time_ms: number;
   message: string;

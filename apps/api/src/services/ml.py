@@ -45,6 +45,10 @@ class MlOutcome:
     rejected: tuple[Any, ...]
     tables: tuple[Any, ...]
     trace: tuple[str, ...]
+    #: Duan's smearing factor the engine used to turn its log-space prediction
+    #: into ``predicted_ms``. Surfaced for the report/UI so the bias correction
+    #: is auditable instead of being an invisible transform.
+    smearing_factor: float = 1.0
 
 
 def _expm1(value: float) -> float:
@@ -251,13 +255,18 @@ def optimize(
         rejected=tuple(report.rejected),
         tables=tuple(report.tables),
         trace=tuple(trace),
+        smearing_factor=float(getattr(report, "smearing_factor", 1.0) or 1.0),
     )
 
 
 def scale_metrics(
     original_cost: float, original_ms: float, predicted_ms: float
 ) -> dict[str, float]:
-    """Estimate the optimized cost by scaling it with the predicted latency."""
+    """Estimate the optimized cost by scaling it with the predicted latency.
+
+    ``predicted_ms`` is already the Duan-smearing-corrected estimate from the
+    engine, so this function must never re-apply the factor.
+    """
     if original_ms <= 0 or predicted_ms <= 0:
         return {"cost": round(original_cost, 2), "time_ms": round(original_ms, 3)}
     ratio = max(0.0, min(1.0, predicted_ms / original_ms))

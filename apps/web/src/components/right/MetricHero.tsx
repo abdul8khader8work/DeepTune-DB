@@ -16,6 +16,18 @@ export function MetricHero() {
   const after = live?.afterMs ?? planMetrics.afterMs;
   const reduction = live?.reductionPct ?? planMetrics.reductionPct;
   const running = phase === "running";
+  // Patch 4 Task 1: shadow validation measures both sides with EXPLAIN ANALYZE
+  // (median of 5). When no validated recommendation exists the optimized number
+  // is the GATv2 estimate, which is Duan-smearing-corrected to a conditional
+  // mean rather than silently reported as a median.
+  const validated =
+    result?.recommendations.some(
+      (item) => item.validated_speedup_factor !== null,
+    ) ?? false;
+  const measuredTitle =
+    "Median of 5 EXPLAIN (ANALYZE) runs; fastest and slowest samples discarded.";
+  const estimatedTitle =
+    "Duan smearing-corrected GATv2 estimate of the conditional mean execution time.";
 
   return (
     <div>
@@ -30,8 +42,11 @@ export function MetricHero() {
 
       <div className="grid grid-cols-2 gap-2">
         <div className="rounded-md border border-subtle bg-surface-2 p-2 xl:p-3">
-          <div className="text-[9px] uppercase tracking-[0.06em] text-content-tertiary">
-            Original latency
+          <div
+            className="text-[9px] uppercase tracking-[0.06em] text-content-tertiary"
+            title={measuredTitle}
+          >
+            Median execution time
           </div>
           <div className="mt-1 font-mono text-xl font-semibold leading-none tabular-nums text-danger xl:text-3xl">
             {formatMs(before)}
@@ -39,8 +54,11 @@ export function MetricHero() {
         </div>
 
         <div className="rounded-md border border-ok/25 bg-surface-2 p-2 xl:p-3">
-          <div className="text-[9px] uppercase tracking-[0.06em] text-content-tertiary">
-            Optimized latency
+          <div
+            className="text-[9px] uppercase tracking-[0.06em] text-content-tertiary"
+            title={validated ? measuredTitle : estimatedTitle}
+          >
+            {validated ? "Median execution time" : "Estimated mean time"}
           </div>
           <div className="mt-1 font-mono text-xl font-semibold leading-none tabular-nums text-ok xl:text-3xl">
             {running ? (

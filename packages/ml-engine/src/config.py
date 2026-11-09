@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from typing import Mapping
 
 import numpy as np
 import torch
@@ -117,6 +118,59 @@ def log1p(value: float) -> float:
 def expm1(value: float) -> float:
     """Inverse of :func:`log1p`, clamped to keep exp() finite."""
     return math.expm1(min(float(value), 50.0))
+
+
+#: Duan's smearing estimator multiplies ``exp(z_hat)`` by ``E[exp(residual)]``.
+#: A checkpoint trained before Patch 4 has no calibration, so 1.0 means "the
+#: naive inverse transform" rather than silently inventing a correction.
+DEFAULT_SMEARING_FACTOR = 1.0
+_MIN_SMEARING_FACTOR = 0.05
+_MAX_SMEARING_FACTOR = 100.0
+
+
+def sanitise_smearing_factor(value: object) -> float:
+    """Coerce a persisted factor into a finite, positive, sane multiplier."""
+    try:
+        factor = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SMEARING_FACTOR
+    if not math.isfinite(factor) or factor <= 0.0:
+        return DEFAULT_SMEARING_FACTOR
+    return min(max(factor, _MIN_SMEARING_FACTOR), _MAX_SMEARING_FACTOR)
+
+
+def read_smearing_factor(
+    metadata: Mapping[str, object],
+    default: float = DEFAULT_SMEARING_FACTOR,
+) -> float:
+    """Read the training-time Duan factor from checkpoint metadata.
+
+    The factor is a scalar because Duan's estimator assumes the residual
+    variance is homoscedastic. Old checkpoints (or a metadata-free ONNX file)
+    fall back to ``1.0``, which is exactly the pre-Patch-4 behaviour and is
+    logged by the inference facade so the fallback is never silent.
+    """
+    return sanitise_smearing_factor(metadata.get("smearing_factor", default))
+
+
+def inverse_log_latency(
+    log_prediction: float, smearing_factor: float = DEFAULT_SMEARING_FACTOR
+) -> float:
+    """De-transform ``log1p(latency_ms)`` with Duan's smearing correction.
+
+    The model regresses ``z = log1p(y)``. ``expm1(z_hat)`` is the conditional
+    *median* for symmetric residuals, not the conditional mean. Duan's
+    estimator restores the mean:
+
+        ``E[y | x] = exp(z_hat) * mean(exp(z_i - z_hat_i)) - 1``
+
+    The factor is a constant per checkpoint, so it preserves the latency
+    ordering the beam search ranks on and only changes the reported numbers.
+    """
+    factor = sanitise_smearing_factor(smearing_factor)
+    # ``exp(z_hat)`` can overflow a float for absurd predictions; the same 50.0
+    # cap as :func:`expm1` keeps the inverse transform finite.
+    return max(math.exp(min(float(log_prediction), 50.0)) * factor - 1.0, 1e-6)
 
 
 def set_seed(seed: int) -> None:

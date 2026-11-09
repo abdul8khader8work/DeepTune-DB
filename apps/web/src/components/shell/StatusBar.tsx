@@ -19,6 +19,14 @@ export function StatusBar() {
   const hypopg = health?.shadow_db_configured ?? true;
 
   const latency = result?.optimized_metrics.time_ms;
+  // Patch 4 Task 1: label the measurement for what it is. Shadow validation
+  // reports the median of 5 EXPLAIN runs; an unvalidated number is the
+  // Duan-smearing-corrected GATv2 mean estimate, never a measured median.
+  const validated =
+    result?.recommendations.some(
+      (item) => item.validated_speedup_factor !== null,
+    ) ?? false;
+  const latencyLabel = validated ? "Median latency:" : "Est. mean latency:";
   const nodes = result?.optimized_dag.length ?? planMetrics.nodeCount;
   const edges = result?.edges.length ?? planEdges.length;
 
@@ -48,7 +56,7 @@ export function StatusBar() {
         </span>
         <span className="hidden h-3 w-px bg-surface-3 sm:block" aria-hidden />
         <span className="hidden items-center gap-1.5 sm:flex">
-          Hypopg:{" "}
+          Shadow DB:{" "}
           <span className={hypopg ? "text-ok" : "text-warn"}>
             {hypopg ? "Enabled" : "Not configured"}
           </span>
@@ -56,8 +64,8 @@ export function StatusBar() {
       </div>
 
       <div className="hidden items-center gap-3 font-mono sm:flex">
-        <span>
-          Latency:{" "}
+        <span title={validated ? "Median of 5 EXPLAIN (ANALYZE) runs" : "Duan smearing-corrected GATv2 estimate"}>
+          {latencyLabel}{" "}
           <span className="text-content-secondary">
             {latency === undefined ? "—" : formatMs(latency)}
           </span>

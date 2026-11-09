@@ -1,4 +1,4 @@
-"""In-memory run registry and applied-hypopg-index tracking."""
+"""In-memory run registry and applied-shadow-index tracking."""
 
 import asyncio
 import logging
@@ -12,6 +12,7 @@ import asyncpg
 
 from src.core.config import Settings
 from src.db.run_archive import NullRunArchive, RunArchive, RunSnapshot
+from src.db.shadow import drop_shadow_index
 from src.schemas.analysis import (
     AnalysisResult,
     IndexRecommendation,
@@ -250,7 +251,8 @@ class RunRegistry:
 @dataclass
 class AppliedIndex:
     conn: asyncpg.Connection
-    hypopg_index_id: int
+    #: Real index created in the shadow DB; ``/revert`` drops it by name.
+    shadow_index_name: str
     validated_execution_time_ms: float
 
 
@@ -276,4 +278,10 @@ class AppliedRegistry:
             items = list(self._items.values())
             self._items.clear()
         for item in items:
+            # Applied indexes are real objects in the shadow DB now, so closing
+            # the connection is not enough: shutdown must drop them explicitly.
+            try:
+                await drop_shadow_index(item.conn, item.shadow_index_name)
+            except Exception:  # noqa: BLE001 - shutdown must never raise
+                logger.debug("Could not drop shadow index %s", item.shadow_index_name)
             await item.conn.close()

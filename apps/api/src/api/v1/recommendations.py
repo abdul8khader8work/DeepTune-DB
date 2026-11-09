@@ -1,11 +1,11 @@
-"""Apply and revert hypothetical indexes inside the shadow database."""
+"""Apply and revert real candidate indexes inside the shadow database."""
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request
 
 from src.api.deps import get_state, require_auth
 from src.core.errors import bad_gateway, conflict, not_found
-from src.db.shadow import ShadowUnavailable, apply_index, drop_hypothetical_index
+from src.db.shadow import ShadowUnavailable, apply_index, drop_shadow_index
 from src.schemas.analysis import ApplyIndexResponse, RevertResponse
 from src.services.runs import AppliedIndex
 
@@ -30,12 +30,12 @@ async def apply_recommendation(
     if await state.applied.exists(recommendation_id):
         raise conflict(
             "INDEX_ALREADY_APPLIED",
-            "That hypothetical index is already active in the shadow database.",
+            "That shadow index is already applied.",
             "Revert it before applying again.",
         )
 
     try:
-        connection, index_id, result = await apply_index(
+        connection, index_name, result = await apply_index(
             state.settings,
             item.sql_query,
             item.recommendation.sql_statement,
@@ -47,18 +47,18 @@ async def apply_recommendation(
         recommendation_id,
         AppliedIndex(
             conn=connection,
-            hypopg_index_id=index_id,
+            shadow_index_name=index_name,
             validated_execution_time_ms=result.execution_time_ms,
         ),
     )
     return ApplyIndexResponse(
-        hypopg_index_id=index_id,
+        shadow_index_name=index_name,
         status="applied",
         validated_execution_time_ms=round(result.execution_time_ms, 3),
         message=(
-            "Hypothetical index applied to the shadow database only. "
-            "Review the CREATE INDEX CONCURRENTLY script before running it "
-            "on the target database."
+            "Index built in the disposable shadow database only and measured "
+            "with EXPLAIN (ANALYZE). Review the CREATE INDEX CONCURRENTLY "
+            "script before running it on the target database."
         ),
     )
 
@@ -72,12 +72,12 @@ async def revert_recommendation(
     if applied is None:
         raise not_found(
             "INDEX_NOT_APPLIED",
-            "No applied hypothetical index matches that recommendation_id.",
+            "No applied shadow index matches that recommendation_id.",
         )
     try:
-        await drop_hypothetical_index(applied.conn, applied.hypopg_index_id)
+        await drop_shadow_index(applied.conn, applied.shadow_index_name)
     except asyncpg.PostgresError as exc:
-        raise bad_gateway("Could not drop the hypothetical index.") from exc
+        raise bad_gateway("Could not drop the shadow index.") from exc
     finally:
         await applied.conn.close()
     return RevertResponse(status="reverted")

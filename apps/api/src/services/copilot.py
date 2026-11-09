@@ -71,7 +71,7 @@ def _recommendation_sentences(result: AnalysisResult) -> list[str]:
     sentences = []
     for index, item in enumerate(result.recommendations, start=1):
         validated = (
-            f", hypopg measured {item.validated_speedup_factor:.2f}x"
+            f", shadow index measured {item.validated_speedup_factor:.2f}x"
             if item.validated_speedup_factor
             else ", not yet validated against the shadow database"
         )
@@ -177,7 +177,7 @@ def _symbolic_tool(result: AnalysisResult) -> dict[str, str]:
 
 def _validation_tool(result: AnalysisResult) -> dict[str, str]:
     if not result.recommendations:
-        return _tool("hypopg_validate", "no candidates", "skipped")
+        return _tool("shadow_validate", "no candidates", "skipped")
     measured = [
         item.validated_speedup_factor
         for item in result.recommendations
@@ -185,7 +185,7 @@ def _validation_tool(result: AnalysisResult) -> dict[str, str]:
     ]
     detail = f"{max(measured):.2f}x measured" if measured else "not measured"
     return _tool(
-        "hypopg_validate", f"{len(result.recommendations)} index(es)", detail
+        "shadow_validate", f"{len(result.recommendations)} index(es)", detail
     )
 
 

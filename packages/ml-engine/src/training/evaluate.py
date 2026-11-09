@@ -10,7 +10,7 @@ from typing import Sequence
 from models.checkpoint import load_checkpoint
 from models.gatv2 import parameter_count
 from training.dataset import PlanGraphDataset, make_loader
-from training.evaluation import evaluate_model
+from training.evaluation import evaluate_model_report
 from training.workload import build_demo_catalog, generate_workload
 
 
@@ -33,14 +33,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     workload = generate_workload(args.tier, args.size, args.seed, catalog)
     dataset = PlanGraphDataset.from_samples(workload.samples, catalog)
     loader = make_loader(dataset, batch_size=args.batch_size)
-    metrics = evaluate_model(model, loader, device=args.device)
+    evaluation = evaluate_model_report(model, loader, device=args.device)
     report = {
         "checkpoint": str(Path(args.checkpoint)),
         "tier": args.tier,
         "samples": len(dataset),
         "parameters": parameter_count(model),
         "trained_epoch": metadata.get("epoch"),
-        "metrics": metrics,
+        "metrics": evaluation.metrics,
+        # The factor calibrated on this sample; compare it with the checkpoint's
+        # persisted factor to spot distribution drift before shipping weights.
+        "smearing_factor": evaluation.smearing_factor,
+        "checkpoint_smearing_factor": metadata.get("smearing_factor"),
     }
     payload = json.dumps(report, indent=2)
     if args.out:

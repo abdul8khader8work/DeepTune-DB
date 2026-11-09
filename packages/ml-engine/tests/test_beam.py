@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from config import NODE_COST_INDEX, NODE_INDEX_SCAN_INDEX
+from config import NODE_COST_INDEX, NODE_INDEX_SCAN_INDEX, inverse_log_latency
 from parsers.explain import PlanGraph, plan_to_graph
 from parsers.schema import ColumnStats, SchemaCatalog, TableStats
 from search.beam import (
@@ -126,3 +126,35 @@ def test_configuration_never_reuses_a_table(explain_payload: dict[str, Any]) -> 
     for configuration in result.configurations:
         tables = [candidate.table.qualified_name for candidate in configuration.candidates]
         assert len(tables) == len(set(tables))
+
+
+def test_smearing_corrects_reported_latency_without_reordering(
+    explain_payload: dict[str, Any],
+) -> None:
+    base = plan_to_graph(explain_payload)
+    scorer = HeuristicScorer()
+    candidates = [
+        _candidate("orders", "a", write_impact=9.0),
+        _candidate("orders", "b", write_impact=1.0),
+        _candidate("orders", "c", write_impact=5.0),
+    ]
+    plain = BeamSearch(
+        scorer, config=BeamSearchConfig(width=5, max_indexes=1)
+    ).search(base, candidates)
+    smeared = BeamSearch(
+        scorer,
+        config=BeamSearchConfig(width=5, max_indexes=1, smearing_factor=1.75),
+    ).search(base, candidates)
+
+    log_latency = scorer.predict_log_latency(base)
+    assert plain.baseline.predicted_latency_ms == pytest.approx(
+        round(inverse_log_latency(log_latency, 1.0), 4)
+    )
+    assert smeared.baseline.predicted_latency_ms == pytest.approx(
+        round(inverse_log_latency(log_latency, 1.75), 4)
+    )
+    # Duan's factor is a positive monotonic transform, so the beam ordering is
+    # identical even though every reported millisecond value moved.
+    assert [item.candidates for item in plain.configurations] == [
+        item.candidates for item in smeared.configurations
+    ]

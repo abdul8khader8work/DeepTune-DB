@@ -132,3 +132,6 @@ class OptimizationReport:
     #: Plan for the winning configuration, so the API can render the optimized
     #: DAG without re-parsing. ``None`` only when no configuration was ranked.
     plan_graph: "PlanGraph | None" = None
+    #: Duan's smearing factor used to de-transform every latency in this report.
+    #: ``1.0`` means the checkpoint predates Patch 4 and no calibration exists.
+    smearing_factor: float = 1.0

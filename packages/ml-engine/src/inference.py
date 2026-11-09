@@ -24,6 +24,7 @@ from config import (
     MAX_INDEXES,
     STORAGE_BUDGET_RATIO,
     TIE_MARGIN,
+    read_smearing_factor,
 )
 from models.checkpoint import ModelConfig, load_checkpoint
 from models.gatv2 import parameter_count, summarize_attention
@@ -133,6 +134,10 @@ class InferenceConfig:
     onnx_path: str | None = None
     #: Set false to score with the PyTorch forward (used by parity tests).
     prefer_onnx: bool = True
+    #: Override the checkpoint's Duan smearing factor. ``None`` means "use the
+    #: calibration written by :mod:`training.train`"; tests use this to pin a
+    #: known factor without fabricating a training run.
+    smearing_factor: float | None = None
 
 
 def _confidence(result: BeamResult) -> float:
@@ -155,6 +160,21 @@ class PlanOptimizer:
         self._model, self._model_config, self._metadata = load_checkpoint(
             config.checkpoint_path, map_location=config.device
         )
+        if config.smearing_factor is None:
+            # Patch 4 Task 1: the factor is calibrated at training time and
+            # persisted next to the weights. A checkpoint without it keeps the
+            # naive transform, but says so instead of hiding the bias.
+            self._smearing_factor = read_smearing_factor(self._metadata)
+            if "smearing_factor" not in self._metadata:
+                logger.warning(
+                    "Checkpoint %s has no smearing_factor; reporting naive "
+                    "expm1 latencies (retrain with `make ml-train-full`)",
+                    config.checkpoint_path,
+                )
+        else:
+            self._smearing_factor = read_smearing_factor(
+                {"smearing_factor": config.smearing_factor}
+            )
         self._model.eval()
         self._torch_scorer = ModelScorer(self._model, device=config.device)
         self._onnx = self._load_onnx()
@@ -194,6 +214,11 @@ class PlanOptimizer:
     def runtime(self) -> str:
         """``"onnx"`` when onnxruntime scores plans, ``"torch"`` otherwise."""
         return "onnx" if self._onnx is not None else "torch"
+
+    @property
+    def smearing_factor(self) -> float:
+        """Duan's calibration factor applied to every reported latency."""
+        return self._smearing_factor
 
     @property
     def parameter_count(self) -> int:
@@ -275,13 +300,16 @@ class PlanOptimizer:
                 max_indexes=self._config.max_indexes,
                 tie_margin=self._config.tie_margin,
                 storage_budget_ratio=self._config.storage_budget_ratio,
+                smearing_factor=self._smearing_factor,
             ),
         )
         # Task 3 constraint: never build an autograd graph while scoring
         # thousands of candidate plans.
         with torch.no_grad():
             result = search.search(base_graph, symbolic.candidates, catalog)
-        trace = result.trace
+        trace = result.trace + (
+            f"latency de-transform: Duan smearing S={self._smearing_factor:.4f}",
+        )
         if hypothetical is not None:
             trace = trace + (
                 f"hypopg: scored {len(hypothetical.scored)} hypothetical plan(s); "
@@ -340,6 +368,7 @@ class PlanOptimizer:
             tables=symbolic.tables,
             symbolic_candidate_count=len(symbolic.candidates),
             plan_graph=explanation_graph if best is not None else None,
+            smearing_factor=self._smearing_factor,
         )
 
     def rank_configurations(
