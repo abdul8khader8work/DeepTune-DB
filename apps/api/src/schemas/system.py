@@ -12,6 +12,11 @@ class HealthResponse(StrictModel):
     auth_enabled: bool
     shadow_db_configured: bool
     metadata_store: str
+    #: Patch File Final: true when DEMO_MODE is active (auth bypassed,
+    # # auto-connect, no connection modal).
+    demo_mode: bool = False
+    #: Connection id of the auto-connected demo database (demo mode only).
+    demo_connection_id: str | None = None
     #: Patch 3: copilot + optimize peers currently registered. Must return to 0
     #: within one server heartbeat (30s + 10s timeout) after every tab closes.
     ws_active_connections: int = 0

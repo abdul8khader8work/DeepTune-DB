@@ -40,6 +40,10 @@ async def require_auth(
 ) -> str:
     """Verify the HS256 bearer token unless auth is disabled for local dev."""
     settings = get_state(request).settings
+    # Demo mode: bypass JWT entirely so a live presentation never stalls on a
+    # missing token. A permanent dev subject is returned for audit trails.
+    if settings.demo_mode:
+        return "demo-user"
     if not settings.auth_enabled:
         return "auth-disabled"
     if not authorization:

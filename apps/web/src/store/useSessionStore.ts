@@ -17,6 +17,9 @@ const DEMO_CONNECTION = {
   ssl_mode: "prefer" as const,
 };
 
+/** Token injected automatically when DEMO_MODE is active (no manual paste needed). */
+const DEMO_TOKEN = "demo-dev-token-do-not-use-in-production";
+
 type SessionState = {
   health: HealthResponse | null;
   engine: EngineStatus | null;
@@ -25,6 +28,8 @@ type SessionState = {
   tables: TableSchema[];
   busy: boolean;
   error: string | null;
+  demoMode: boolean;
+  demoConnectionId: string | null;
   setToken: (token: string) => void;
   refresh: () => Promise<void>;
   connect: () => Promise<string>;
@@ -46,6 +51,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   tables: [],
   busy: false,
   error: null,
+  demoMode: false,
+  demoConnectionId: null,
 
   setToken: (token) => {
     storeToken(token);
@@ -58,7 +65,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         api.health(),
         api.engineStatus(),
       ]);
-      set({ health, engine, error: null });
+      // Patch File Final: in demo mode, inject a permanent dev token so the
+      // frontend never asks the operator to paste one into localStorage.
+      if (health.demo_mode) {
+        storeToken(DEMO_TOKEN);
+      }
+      set({
+        health,
+        engine,
+        demoMode: health.demo_mode,
+        demoConnectionId: health.demo_connection_id,
+        // Patch File Final: in demo mode the backend already auto-connected,
+        // so the connection id is known immediately — no modal needed.
+        connectionId: health.demo_mode && health.demo_connection_id
+          ? health.demo_connection_id
+          : null,
+        error: null,
+      });
     } catch (error) {
       set({ error: describe(error) });
     }
@@ -67,6 +90,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   connect: async () => {
     set({ busy: true, error: null });
     try {
+      // Patch File Final: in demo mode the backend already auto-connected on
+      // startup; reuse that connection instead of asking the operator again.
+      if (get().demoMode && get().demoConnectionId) {
+        set({
+          connectionId: get().demoConnectionId!,
+          busy: false,
+        });
+        const schema = await api.schema(get().demoConnectionId!);
+        set({ tables: schema.tables });
+        return get().demoConnectionId!;
+      }
       const connection = await api.connect(DEMO_CONNECTION);
       set({
         connectionId: connection.connection_id,

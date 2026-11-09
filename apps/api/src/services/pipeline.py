@@ -38,6 +38,9 @@ from src.services.recommender import recommend_indexes
 from src.services.runs import RecommendationState, RunRegistry
 from src.services.sql_guard import SqlValidationError, validate_sql
 
+#: Golden-path fallback for live demos (Patch File Final).
+from src.services.mock_demo import golden_result
+
 logger = logging.getLogger(__name__)
 
 
@@ -296,11 +299,34 @@ async def execute(run_id: str, request: QueryAnalysisRequest, deps: PipelineDeps
     try:
         await _execute(run_id, request, deps)
     except SqlValidationError as exc:
+        if deps.settings.demo_mode:
+            logger.warning(
+                "Demo mode: SQL validation failed for run %s, serving golden path: %s",
+                run_id,
+                exc,
+            )
+            await deps.runs.complete(run_id, golden_result(run_id), [])
+            return
         await deps.runs.fail(run_id, str(exc))
     except ApiError as exc:
+        if deps.settings.demo_mode:
+            logger.warning(
+                "Demo mode: API error for run %s, serving golden path: %s",
+                run_id,
+                exc,
+            )
+            await deps.runs.complete(run_id, golden_result(run_id), [])
+            return
         await deps.runs.fail(run_id, exc.message)
     except Exception:  # pragma: no cover - defensive boundary
         logger.exception("Analysis run %s failed unexpectedly", run_id)
+        if deps.settings.demo_mode:
+            logger.warning(
+                "Demo mode: unexpected failure for run %s, serving golden path",
+                run_id,
+            )
+            await deps.runs.complete(run_id, golden_result(run_id), [])
+            return
         await deps.runs.fail(
             run_id, "Analysis failed. Check the API logs for the error class."
         )

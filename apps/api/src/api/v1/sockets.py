@@ -25,6 +25,8 @@ def socket_state(websocket: WebSocket) -> AppState | None:
 
 
 def socket_authorised(websocket: WebSocket, state: AppState) -> bool:
+    if state.settings.demo_mode:
+        return True
     if not state.settings.auth_enabled:
         return True
     token = websocket.query_params.get("token")

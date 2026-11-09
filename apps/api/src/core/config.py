@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     cache_maxsize: int = Field(default=256, ge=1, le=100_000)
     cache_ttl_seconds: int = Field(default=300, ge=0, le=86_400)
 
+    # --- Demo mode (Patch File Final: one-click demo bootstrap) -------------
+    # When true the API bypasses JWT validation, auto-connects to the demo
+    # target DB on startup, and the pipeline falls back to MockDemoService if
+    # the real engine/shadow DB is unavailable during a live demo.
+    demo_mode: bool = False
+    demo_db_host: str = "localhost"
+    demo_db_port: int = 5432
+    demo_db_name: str = "deeptune_target"
+    demo_db_user: str = "query_optimizer"
+    demo_db_password: str = "query_optimizer_dev_password"
+
     # --- Phase 4: neuro-symbolic engine wiring ------------------------------
     ml_enabled: bool = True
     # Empty means "resolve from the repository layout" (see services/engine.py).

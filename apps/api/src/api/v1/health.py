@@ -24,6 +24,8 @@ async def health(request: Request) -> HealthResponse:
             if isinstance(state.store, MemoryConnectionStore)
             else "postgres"
         ),
+        demo_mode=state.settings.demo_mode,
+        demo_connection_id=getattr(request.app.state, "demo_connection_id", None),
         # Patch 3: a number above the number of open tabs means a leaked peer.
         ws_active_connections=active_connection_total(),
     )

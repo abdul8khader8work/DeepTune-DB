@@ -37,6 +37,8 @@ export interface HealthResponse {
   auth_enabled: boolean;
   shadow_db_configured: boolean;
   metadata_store: string;
+  demo_mode: boolean;
+  demo_connection_id: string | null;
 }
 
 export type EngineRuntime = "onnx" | "torch" | "heuristic";

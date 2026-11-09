@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from http import HTTPStatus
@@ -19,10 +20,12 @@ from src.api.v1.router import router as v1_router
 from src.core.cache import init_cache
 from src.core.config import Settings, get_settings
 from src.core.errors import ApiError
+from src.core.security import build_dsn
 from src.core.logging import configure_logging
 from src.core.ratelimit import limiter
 from src.db.metadata import create_connection_store
 from src.db.run_archive import create_run_archive
+from src.db.target import StoredConnection, connect_target
 from src.services.engine import load_engine
 from src.services.runs import AppliedRegistry, RunRegistry
 from src.services.ws_registry import optimize_registry
@@ -60,6 +63,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.app_env,
         engine.status.backend,
     )
+    # Patch File Final: in demo mode, auto-connect to the pre-configured demo
+    # target DB on startup so the frontend never shows a connection modal.
+    demo_connection_id: str | None = None
+    if settings.demo_mode:
+        try:
+            dsn = build_dsn(
+                host=settings.demo_db_host,
+                port=settings.demo_db_port,
+                dbname=settings.demo_db_name,
+                user=settings.demo_db_user,
+                password=settings.demo_db_password,
+            )
+            stored = StoredConnection(dsn=dsn, ssl_mode="prefer")
+            connection = await connect_target(stored, settings)
+            try:
+                await connection.fetchval("SHOW server_version")
+            finally:
+                await connection.close()
+            demo_connection_id = str(uuid.uuid4())
+            await state.store.save(demo_connection_id, dsn, "prefer")
+            logger.info(
+                "Demo mode: auto-connected to demo target DB (connection_id=%s)",
+                demo_connection_id,
+            )
+        except Exception:  # pragma: no cover - demo best-effort
+            logger.exception("Demo mode: could not auto-connect to demo target DB")
+    app.state.demo_connection_id = demo_connection_id
     try:
         yield
     finally:
