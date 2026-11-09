@@ -63,7 +63,7 @@ echo     API is healthy.
 :: ------------------------------------------------------------------------
 echo [3/4] Starting frontend (npm run dev)…
 cd apps/web
-call npm.cmd run dev >nul 2>&1 &
+start "" cmd /c "npm.cmd run dev" >nul 2>&1
 cd ".."
 
 :: ------------------------------------------------------------------------
@@ -90,6 +90,6 @@ echo.
 echo  Demo mode: ON (JWT bypassed, auto-connect, golden-path fallback)
 echo.
 echo  Press Ctrl+C to stop the demo servers.
-echo.
-:end
+pause
+goto end
 endlocal
